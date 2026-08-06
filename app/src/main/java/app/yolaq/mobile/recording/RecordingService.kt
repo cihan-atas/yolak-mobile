@@ -62,6 +62,18 @@ class RecordingService : Service() {
                 stopRecording()
                 return START_NOT_STICKY
             }
+
+            // A null action means the system restarted us after a kill (see
+            // START_STICKY below). Resume if a recording is still open,
+            // otherwise stand down rather than lingering as a service that
+            // holds a notification and records nothing.
+            null -> if (RecordingRepository.state.value.status == RecordingStatus.RECORDING) {
+                Log.i(TAG, "Servis yeniden başlatıldı, kayıt sürdürülüyor")
+                resumeLocationUpdates()
+            } else {
+                stopSelf()
+                return START_NOT_STICKY
+            }
         }
         // Restart if the system kills us mid-recording: losing an outing to a
         // low-memory kill would be the worst possible failure for this app.
@@ -85,9 +97,19 @@ class RecordingService : Service() {
             return
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification())
         RecordingRepository.start()
+        resumeLocationUpdates()
+    }
 
+    /**
+     * Raises the ongoing notification and subscribes to location.
+     *
+     * Split out from [startRecording] so a service restarted by the system can
+     * pick an open recording back up without discarding it, which starting over
+     * would do.
+     */
+    private fun resumeLocationUpdates() {
+        startForeground(NOTIFICATION_ID, buildNotification())
         runCatching {
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
@@ -100,9 +122,26 @@ class RecordingService : Service() {
         }
     }
 
-    /** Stops updates and leaves the foreground. */
+    /**
+     * Stops updates, closes the recording, and leaves the foreground.
+     *
+     * Closing the recording is the part that must not be skipped: the state is
+     * held by [RecordingRepository], not by this service, so tearing the
+     * service down without it leaves the screen showing a running clock and
+     * "Bitir" while no location is being requested at all — the app claiming to
+     * record when it is not, which is the worst thing it could do.
+     */
     private fun stopRecording() {
         runCatching { locationManager.removeUpdates(listener) }
+        val finished = RecordingRepository.stop()
+        Log.i(
+            TAG,
+            "Kayıt bitti: %.2f km, %d nokta, %d sn".format(
+                finished.distanceMeters / 1000.0,
+                finished.points.size,
+                finished.elapsedMillis() / 1000,
+            ),
+        )
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -151,7 +190,9 @@ class RecordingService : Service() {
     private fun buildNotification(): Notification {
         val state = RecordingRepository.state.value
         val km = state.distanceMeters / 1000.0
-        val minutes = state.movingMillis / 60_000
+        // elapsedMillis, not movingMillis: the latter only advances on pause or
+        // stop, so the notification would sit at "0 dk" for a whole outing.
+        val minutes = state.elapsedMillis() / 60_000
 
         val open = PendingIntent.getActivity(
             this,

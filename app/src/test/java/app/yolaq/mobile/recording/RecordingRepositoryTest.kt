@@ -179,6 +179,28 @@ class RecordingRepositoryTest {
     }
 
     @Test
+    fun `stopping hands back the recording and clears the state`() {
+        RecordingRepository.start(startTime)
+        RecordingRepository.offer(fix(0.0, 0, speed = 1.3))
+        repeat(30) { second ->
+            RecordingRepository.offer(fix(1.3 * (second + 1), second + 1L, speed = 1.3))
+        }
+
+        val finished = RecordingRepository.stop(startTime + 31_000)
+
+        // The finished recording has to come back, or the outing is lost.
+        assertTrue("bitmiş kayıt boş döndü", finished.distanceMeters > 30.0)
+        assertEquals(31_000L, finished.movingMillis)
+
+        // And the live state has to be clear, or the screen keeps showing a
+        // running clock and a "Bitir" button while nothing is being recorded.
+        val state = RecordingRepository.state.value
+        assertEquals(RecordingStatus.IDLE, state.status)
+        assertEquals(0.0, state.distanceMeters, 0.001)
+        assertEquals(0, state.points.size)
+    }
+
+    @Test
     fun `pace is reported while moving`() {
         RecordingRepository.start(startTime)
         RecordingRepository.offer(fix(0.0, 0, speed = 3.0))
