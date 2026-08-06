@@ -58,6 +58,11 @@ class RecordingService : Service() {
                 updateNotification()
             }
 
+            ACTION_START_ANYWAY -> {
+                RecordingRepository.startAnyway()
+                updateNotification()
+            }
+
             ACTION_STOP -> {
                 stopRecording()
                 return START_NOT_STICKY
@@ -67,7 +72,9 @@ class RecordingService : Service() {
             // START_STICKY below). Resume if a recording is still open,
             // otherwise stand down rather than lingering as a service that
             // holds a notification and records nothing.
-            null -> if (RecordingRepository.state.value.status == RecordingStatus.RECORDING) {
+            null -> if (RecordingRepository.state.value.status in
+                setOf(RecordingStatus.RECORDING, RecordingStatus.ACQUIRING)
+            ) {
                 Log.i(TAG, "Servis yeniden başlatıldı, kayıt sürdürülüyor")
                 resumeLocationUpdates()
             } else {
@@ -160,7 +167,10 @@ class RecordingService : Service() {
             accuracy = if (location.hasAccuracy()) location.accuracy else Float.MAX_VALUE,
             recordedAt = location.time,
         )
-        if (RecordingRepository.offer(point)) {
+        val accepted = RecordingRepository.offer(point)
+        // While acquiring, a rejected fix still changes what the notification
+        // should say — it carries the accuracy the user is waiting on.
+        if (accepted || RecordingRepository.state.value.status == RecordingStatus.ACQUIRING) {
             updateNotification()
         }
     }
@@ -202,6 +212,10 @@ class RecordingService : Service() {
         )
 
         val text = when {
+            state.status == RecordingStatus.ACQUIRING ->
+                state.lastAccuracy?.let { getString(R.string.recording_acquiring_accuracy, it) }
+                    ?: getString(R.string.recording_waiting_for_fix)
+
             state.weakSignal -> getString(R.string.recording_weak_signal)
             state.waitingForFix -> getString(R.string.recording_waiting_for_fix)
             state.status == RecordingStatus.PAUSED -> getString(R.string.recording_paused)
@@ -238,6 +252,7 @@ class RecordingService : Service() {
         private const val MIN_DISTANCE_M = 1f
 
         const val ACTION_START = "app.yolaq.mobile.START"
+        const val ACTION_START_ANYWAY = "app.yolaq.mobile.START_ANYWAY"
         const val ACTION_PAUSE = "app.yolaq.mobile.PAUSE"
         const val ACTION_RESUME = "app.yolaq.mobile.RESUME"
         const val ACTION_STOP = "app.yolaq.mobile.STOP"

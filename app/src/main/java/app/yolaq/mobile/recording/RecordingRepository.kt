@@ -12,20 +12,33 @@ import kotlinx.coroutines.flow.asStateFlow
 private const val MAX_ACCURACY_M = 30f
 
 /**
+ * A recording will not begin until a fix this accurate arrives.
+ *
+ * This is the real defence against drift, and it belongs here rather than in
+ * the filter: a recording that starts on a vague fix has to filter hard to stay
+ * honest, and filtering hard is how a slow walk gets thrown away. Fix the
+ * signal at the source and the filter can stay gentle. RunnerUp uses the same
+ * 10 m threshold for the same reason.
+ */
+private const val FIX_ACCURACY_M = 10f
+
+/**
  * Movement below this is treated as jitter, not travel. Matches the server's
  * own rule so a track measured here and the same track measured after upload
  * agree with each other.
  */
-private const val MIN_MOVEMENT_M = 3.0
+private const val MIN_MOVEMENT_M = 2.0
 
 /**
  * A step must also clear this fraction of the fix's own accuracy. A ±10 m fix
- * simply cannot resolve a 4 m move, so counting one is counting noise. This is
- * what stops a phone sitting on a table from slowly gaining distance: with a
- * fixed threshold alone, per-second drift of 3-5 m accumulates into hundreds of
- * metres over an hour.
+ * simply cannot resolve a 3 m move, so counting one is counting noise.
+ *
+ * Kept deliberately gentle: with [FIX_ACCURACY_M] gating the start, the
+ * recording begins on a fix good enough that drift is small, so this no longer
+ * has to carry the whole burden of rejecting it. An aggressive value here is
+ * what previously made real walking register as nothing.
  */
-private const val MIN_MOVEMENT_ACCURACY_RATIO = 0.5
+private const val MIN_MOVEMENT_ACCURACY_RATIO = 0.35
 
 /**
  * Below this the receiver is saying the athlete is standing still. GPS speed
@@ -67,6 +80,16 @@ private const val MAX_IMPLIED_SPEED_RATIO = 3.0
 private const val MIN_IMPLIED_SPEED_ALLOWANCE_MPS = 2.0
 
 /**
+ * Weight given to the newest fix when smoothing the displayed speed.
+ *
+ * A raw per-second GPS speed swings by a metre per second or more between
+ * fixes, which makes the number on screen unreadable while running. A simple
+ * low-pass filter settles it without adding noticeable lag. RunnerUp uses the
+ * same 0.4.
+ */
+private const val SPEED_SMOOTHING_ALPHA = 0.4
+
+/**
  * The single source of truth for the recording in progress.
  *
  * Deliberately an object rather than an injected dependency: the foreground
@@ -85,16 +108,40 @@ object RecordingRepository {
     private var stretchStartedAt: Long = 0L
 
     /**
-     * Begin a recording, discarding anything previously held.
+     * Begin waiting for a fix good enough to record from.
      *
-     * @param now Epoch millis to treat as the start.
+     * Nothing is recorded and the clock does not run until that fix arrives —
+     * see [RecordingStatus.ACQUIRING]. Time spent hunting for satellites is not
+     * part of the outing.
+     *
+     * @param now Epoch millis to treat as the start of the wait.
      */
     fun start(now: Long = System.currentTimeMillis()) {
-        stretchStartedAt = now
         _state.value = RecordingState(
-            status = RecordingStatus.RECORDING,
+            status = RecordingStatus.ACQUIRING,
             waitingForFix = true,
+            acquiringSince = now,
+        )
+    }
+
+    /**
+     * Start recording on whatever fix is available, abandoning the wait.
+     *
+     * Offered only after the wait has dragged on, because indoors or under
+     * cover the accuracy may never reach [FIX_ACCURACY_M] and a wait screen
+     * with no way past it strands the user.
+     *
+     * @param now Epoch millis to open the first stretch at.
+     */
+    fun startAnyway(now: Long = System.currentTimeMillis()) {
+        if (_state.value.status != RecordingStatus.ACQUIRING) {
+            return
+        }
+        stretchStartedAt = now
+        _state.value = _state.value.copy(
+            status = RecordingStatus.RECORDING,
             stretchStartedAt = now,
+            acquiringSince = null,
         )
     }
 
@@ -163,8 +210,50 @@ object RecordingRepository {
      * @param point The fix to consider.
      * @return True when the fix was accepted into the track.
      */
+    /**
+     * Eases the displayed speed towards a new reading.
+     *
+     * @param current The speed shown now, or null if none has been shown yet.
+     * @param target The speed this fix suggests, in m/s.
+     * @return The speed to show.
+     */
+    private fun smoothSpeed(current: Double?, target: Double): Double =
+        current?.let { target * SPEED_SMOOTHING_ALPHA + it * (1 - SPEED_SMOOTHING_ALPHA) } ?: target
+
+    /**
+     * Handles a fix offered while still waiting for a usable signal.
+     *
+     * @param current The state to build on.
+     * @param point The fix to consider.
+     * @return True when this fix was good enough to start the recording.
+     */
+    private fun acquire(current: RecordingState, point: TrackPoint): Boolean {
+        if (point.accuracy > FIX_ACCURACY_M) {
+            // Report the accuracy while waiting so the screen can show progress
+            // rather than an unexplained delay.
+            _state.value = current.copy(lastAccuracy = point.accuracy)
+            return false
+        }
+        stretchStartedAt = point.recordedAt
+        _state.value = current.copy(
+            status = RecordingStatus.RECORDING,
+            points = listOf(point),
+            lastFixAt = point.recordedAt,
+            waitingForFix = false,
+            lastAccuracy = point.accuracy,
+            weakSignal = false,
+            stretchStartedAt = point.recordedAt,
+            acquiringSince = null,
+            lastSpeed = 0.0,
+        )
+        return true
+    }
+
     fun offer(point: TrackPoint): Boolean {
         val current = _state.value
+        if (current.status == RecordingStatus.ACQUIRING) {
+            return acquire(current, point)
+        }
         if (current.status != RecordingStatus.RECORDING) {
             return false
         }
@@ -175,7 +264,8 @@ object RecordingRepository {
             _state.value = current.copy(
                 lastAccuracy = point.accuracy,
                 weakSignal = true,
-                lastSpeed = point.speed,
+                lastSpeed = point.speed?.let { smoothSpeed(current.lastSpeed, it) }
+                    ?: current.lastSpeed,
             )
             return false
         }
@@ -221,7 +311,7 @@ object RecordingRepository {
                 lastFixAt = point.recordedAt,
                 lastAccuracy = point.accuracy,
                 weakSignal = false,
-                lastSpeed = 0.0,
+                lastSpeed = smoothSpeed(current.lastSpeed, 0.0),
             )
             return false
         }
@@ -244,7 +334,7 @@ object RecordingRepository {
                 lastFixAt = point.recordedAt,
                 lastAccuracy = point.accuracy,
                 weakSignal = false,
-                lastSpeed = 0.0,
+                lastSpeed = smoothSpeed(current.lastSpeed, 0.0),
             )
             return false
         }
@@ -259,7 +349,7 @@ object RecordingRepository {
             // Fall back to the implied speed when the receiver has no velocity
             // solution: showing 0.0 km/h beside a growing distance would have
             // the screen contradict itself.
-            lastSpeed = reportedSpeed ?: impliedSpeed,
+            lastSpeed = smoothSpeed(current.lastSpeed, reportedSpeed ?: impliedSpeed),
         )
         return true
     }

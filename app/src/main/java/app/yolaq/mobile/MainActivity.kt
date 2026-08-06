@@ -100,11 +100,52 @@ private fun RecordScreen() {
         Text(text = "yolak", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(24.dp))
 
-        Metrics(state)
+        if (state.status == RecordingStatus.ACQUIRING) {
+            AcquiringNotice(state)
+        } else {
+            Metrics(state)
+        }
 
         Spacer(Modifier.height(32.dp))
 
         when (state.status) {
+            // Waiting for a usable fix. No metrics yet and no pause button —
+            // there is nothing to pause — but always a way out, and after a
+            // while a way past, since indoors the threshold may never be met.
+            RecordingStatus.ACQUIRING -> {
+                var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+                LaunchedEffect(state.status) {
+                    while (state.status == RecordingStatus.ACQUIRING) {
+                        now = System.currentTimeMillis()
+                        delay(1_000)
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { RecordingService.send(context, RecordingService.ACTION_STOP) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResourceCompat(context, R.string.record_cancel))
+                    }
+                    if (state.canOverrideAcquire(now)) {
+                        Button(
+                            onClick = {
+                                RecordingService.send(
+                                    context,
+                                    RecordingService.ACTION_START_ANYWAY,
+                                )
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text(stringResourceCompat(context, R.string.record_start_anyway))
+                        }
+                    }
+                }
+            }
+
             RecordingStatus.IDLE -> Button(
                 onClick = {
                     if (hasPermission) {
@@ -162,6 +203,36 @@ private fun RecordScreen() {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+    }
+}
+
+/**
+ * The wait for a fix good enough to record from.
+ *
+ * Shows the accuracy it is waiting on rather than a bare spinner: an unexplained
+ * delay reads as a broken app, while a number that visibly falls reads as
+ * progress — and explains why the wait is worth it.
+ */
+@Composable
+private fun AcquiringNotice(state: RecordingState) {
+    val context = LocalContext.current
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = stringResourceCompat(context, R.string.record_acquiring),
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Spacer(Modifier.height(12.dp))
+        state.lastAccuracy?.let {
+            Text(
+                text = context.getString(R.string.record_acquiring_accuracy, it),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+        Text(
+            text = stringResourceCompat(context, R.string.record_acquiring_hint),
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 

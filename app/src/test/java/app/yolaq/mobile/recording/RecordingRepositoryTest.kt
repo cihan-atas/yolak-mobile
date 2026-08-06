@@ -31,6 +31,17 @@ class RecordingRepositoryTest {
     }
 
     /**
+     * Starts a recording that is already past the acquire gate.
+     *
+     * Most tests are about the filter, not the gate, so they need a track that
+     * is anchored and running; the gate itself is covered separately.
+     */
+    private fun startRecording() {
+        RecordingRepository.start(startTime)
+        RecordingRepository.offer(fix(0.0, 0, accuracy = 5f, speed = 0.0))
+    }
+
+    /**
      * Builds a fix north of the start point.
      *
      * @param metresNorth Displacement from the start, in metres.
@@ -55,8 +66,7 @@ class RecordingRepositoryTest {
 
     @Test
     fun `stationary phone gains no distance`() {
-        RecordingRepository.start(startTime)
-        RecordingRepository.offer(fix(0.0, 0, speed = 0.0))
+        startRecording()
 
         // Two metres of drift each way, once a second, for two minutes — the
         // shape of a phone sitting still with a good fix.
@@ -91,8 +101,7 @@ class RecordingRepositoryTest {
 
     @Test
     fun `walking accumulates distance when the receiver reports a real speed`() {
-        RecordingRepository.start(startTime)
-        RecordingRepository.offer(fix(0.0, 0, speed = 1.3))
+        startRecording()
         repeat(60) { second ->
             RecordingRepository.offer(fix(1.3 * (second + 1), second + 1L, speed = 1.3))
         }
@@ -117,8 +126,7 @@ class RecordingRepositoryTest {
 
     @Test
     fun `a teleport is rejected`() {
-        RecordingRepository.start(startTime)
-        RecordingRepository.offer(fix(0.0, 0, speed = 1.3))
+        startRecording()
         // 500 m in one second while the receiver insists on a walking pace:
         // a re-acquisition, not travel.
         RecordingRepository.offer(fix(500.0, 1, speed = 1.3))
@@ -128,18 +136,18 @@ class RecordingRepositoryTest {
 
     @Test
     fun `vague fixes are rejected and surfaced`() {
-        RecordingRepository.start(startTime)
-        RecordingRepository.offer(fix(0.0, 0, accuracy = 80f))
+        startRecording()
+        RecordingRepository.offer(fix(50.0, 1, accuracy = 80f))
 
         val state = RecordingRepository.state.value
         assertTrue("zayıf sinyal bildirilmedi", state.weakSignal)
-        assertEquals(0, state.points.size)
+        assertEquals(1, state.points.size)
+        assertEquals(0.0, state.distanceMeters, 0.001)
     }
 
     @Test
     fun `paused recordings ignore fixes`() {
-        RecordingRepository.start(startTime)
-        RecordingRepository.offer(fix(0.0, 0, speed = 1.3))
+        startRecording()
         RecordingRepository.pause(startTime + 1_000)
         repeat(30) { second ->
             RecordingRepository.offer(fix(1.3 * (second + 1), second + 2L, speed = 1.3))
@@ -150,15 +158,15 @@ class RecordingRepositoryTest {
 
     @Test
     fun `the clock keeps running between fixes`() {
-        RecordingRepository.start(startTime)
-        // No fixes at all: a recording with a weak signal must still show time
+        startRecording()
+        // No further fixes: a recording with a weak signal must still show time
         // passing rather than sitting frozen at zero.
         assertEquals(30_000L, RecordingRepository.state.value.elapsedMillis(startTime + 30_000))
     }
 
     @Test
     fun `paused time does not count`() {
-        RecordingRepository.start(startTime)
+        startRecording()
         RecordingRepository.pause(startTime + 10_000)
         assertEquals(10_000L, RecordingRepository.state.value.elapsedMillis(startTime + 60_000))
 
@@ -168,8 +176,7 @@ class RecordingRepositoryTest {
 
     @Test
     fun `speed shown while stationary is zero`() {
-        RecordingRepository.start(startTime)
-        RecordingRepository.offer(fix(0.0, 0, speed = 0.0))
+        startRecording()
         RecordingRepository.offer(fix(2.0, 1, speed = 0.05))
 
         // Non-zero speed beside a distance that is not growing would have the
@@ -179,9 +186,65 @@ class RecordingRepositoryTest {
     }
 
     @Test
-    fun `stopping hands back the recording and clears the state`() {
+    fun `recording does not begin until the fix is good enough`() {
         RecordingRepository.start(startTime)
-        RecordingRepository.offer(fix(0.0, 0, speed = 1.3))
+        assertEquals(RecordingStatus.ACQUIRING, RecordingRepository.state.value.status)
+
+        // Vague fixes keep the gate shut, but report what is being waited on.
+        repeat(5) { second ->
+            RecordingRepository.offer(fix(20.0 * second, second.toLong(), accuracy = 25f))
+        }
+        var state = RecordingRepository.state.value
+        assertEquals(RecordingStatus.ACQUIRING, state.status)
+        assertEquals(25f, state.lastAccuracy!!, 0.01f)
+        assertEquals(0, state.points.size)
+
+        // The clock must not run while hunting for satellites — standing at the
+        // trailhead is not part of the outing.
+        assertEquals(0L, state.elapsedMillis(startTime + 30_000))
+
+        // A good fix opens the gate and anchors the track.
+        RecordingRepository.offer(fix(0.0, 10, accuracy = 8f))
+        state = RecordingRepository.state.value
+        assertEquals(RecordingStatus.RECORDING, state.status)
+        assertEquals(1, state.points.size)
+        assertEquals(0.0, state.distanceMeters, 0.001)
+    }
+
+    @Test
+    fun `the wait can be overridden once it drags on`() {
+        RecordingRepository.start(startTime)
+        val waiting = RecordingRepository.state.value
+        assertTrue("hemen atlama teklif edilmemeli", !waiting.canOverrideAcquire(startTime + 5_000))
+        assertTrue(
+            "uzun beklemede atlama teklif edilmeli",
+            waiting.canOverrideAcquire(startTime + ACQUIRE_OVERRIDE_AFTER_MS),
+        )
+
+        RecordingRepository.startAnyway(startTime + ACQUIRE_OVERRIDE_AFTER_MS)
+        assertEquals(RecordingStatus.RECORDING, RecordingRepository.state.value.status)
+    }
+
+    @Test
+    fun `displayed speed is smoothed rather than raw`() {
+        startRecording()
+        // A single wild reading must not throw the display: the low-pass filter
+        // should move towards it, not jump to it.
+        repeat(5) { second ->
+            RecordingRepository.offer(fix(3.0 * (second + 1), second + 1L, speed = 3.0))
+        }
+        val settled = RecordingRepository.state.value.currentSpeed!!
+
+        RecordingRepository.offer(fix(3.0 * 6, 6, speed = 12.0))
+        val jolted = RecordingRepository.state.value.currentSpeed!!
+
+        assertTrue("yumuşatma hızı takip etmedi", jolted > settled)
+        assertTrue("ham değere sıçradı, yumuşatma çalışmıyor", jolted < 8.0)
+    }
+
+    @Test
+    fun `stopping hands back the recording and clears the state`() {
+        startRecording()
         repeat(30) { second ->
             RecordingRepository.offer(fix(1.3 * (second + 1), second + 1L, speed = 1.3))
         }
@@ -202,13 +265,15 @@ class RecordingRepositoryTest {
 
     @Test
     fun `pace is reported while moving`() {
-        RecordingRepository.start(startTime)
-        RecordingRepository.offer(fix(0.0, 0, speed = 3.0))
+        startRecording()
         repeat(10) { second ->
             RecordingRepository.offer(fix(3.0 * (second + 1), second + 1L, speed = 3.0))
         }
 
-        // 3 m/s is 1000/3 = 333 s/km, i.e. 5:33 per kilometre.
-        assertEquals(333.3, RecordingRepository.state.value.currentPaceSecondsPerKm!!, 1.0)
+        // 3 m/s is 1000/3 = 333 s/km, i.e. 5:33 per kilometre. The tolerance is
+        // wide because the displayed speed is smoothed: it approaches the true
+        // value over several fixes rather than landing on it, which is the
+        // whole point of the filter.
+        assertEquals(333.3, RecordingRepository.state.value.currentPaceSecondsPerKm!!, 8.0)
     }
 }
