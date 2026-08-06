@@ -1,4 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">yolak</string>
+
+    <!-- Recording notification -->
+    <string name="recording_channel_name">Kayıt</string>
+    <string name="recording_channel_description">Aktivite kaydı sürerken görünen bildirim</string>
+    <string name="recording_waiting_for_fix">GPS bekleniyor…</string>
+    <string name="recording_weak_signal">Zayıf GPS sinyali</string>
+    <string name="recording_paused">Duraklatıldı</string>
+    <string name="recording_progress">%1$.2f km · %2$d dk</string>
+
+    <!-- Recording screen -->
+    <string name="record_start">Kaydı başlat</string>
+    <string name="record_pause">Duraklat</string>
+    <string name="record_resume">Devam et</string>
+    <string name="record_stop">Bitir</string>
+    <string name="record_distance">Mesafe</string>
+    <string name="record_duration">Süre</string>
+    <string name="record_speed">Hız</string>
+    <string name="record_speed_value">%1$.1f km/sa</string>
+    <string name="record_pace_value">%1$d:%2$02d /km</string>
+    <string name="record_pace_idle">—:— /km</string>
+    <string name="record_points">Nokta</string>
+    <string name="record_permission_needed">Kayıt için konum izni gerekiyor.</string>
+    <string name="record_permission_grant">İzin ver</string>
+    <string name="record_weak_signal">Zayıf GPS sinyali (±%1$.0f m) — açık alana çık</string>
+    <string name="record_waiting">GPS bekleniyor…</string>
+    <string name="record_points_count">%1$d nokta · ±%2$.0f m</string>
+    <string name="record_location_off">Telefonun konum servisi kapalı.</string>
 </resources>
