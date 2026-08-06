@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Placeholder mark: replaced by the real yolak logo once the recorder lands. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#00A88F"
+        android:pathData="M54,28c-10,0 -18,8 -18,18c0,14 18,34 18,34s18,-20 18,-34c0,-10 -8,-18 -18,-18zM54,52a6,6 0,1 1,0 -12a6,6 0,0 1,0 12z" />
+</vector>
