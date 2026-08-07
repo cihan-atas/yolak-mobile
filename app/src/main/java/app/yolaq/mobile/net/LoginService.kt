@@ -172,7 +172,9 @@ object LoginService {
     private fun createApiKey(url: String, accessToken: String, password: String): String? {
         val payload = JSONObject()
             .put("name", KEY_NAME)
-            .put("scopes", org.json.JSONArray().put("activities:upload"))
+            // Upload is what the recorder exists for; reading routes is what
+            // lets it show the line the athlete asked to follow.
+            .put("scopes", org.json.JSONArray().put("activities:upload").put("routes:read"))
             .put("current_password", password)
             .toString()
 

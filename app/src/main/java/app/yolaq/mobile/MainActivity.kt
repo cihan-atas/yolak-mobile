@@ -47,12 +47,16 @@ import app.yolaq.mobile.recording.RecordingService
 import app.yolaq.mobile.recording.RecordingState
 import app.yolaq.mobile.recording.RecordingStatus
 import app.yolaq.mobile.recording.SportType
+import app.yolaq.mobile.routes.FollowedRoute
+import app.yolaq.mobile.routes.RouteGuidance
 import app.yolaq.mobile.sync.RecordingFinisher
 import app.yolaq.mobile.sync.Storage
 import app.yolaq.mobile.sync.UploadWorker
 import app.yolaq.mobile.ui.AppBottomBar
 import app.yolaq.mobile.ui.AppTopBar
 import app.yolaq.mobile.ui.LoginScreen
+import app.yolaq.mobile.ui.RoutePicker
+import app.yolaq.mobile.ui.RouteStatus
 import app.yolaq.mobile.ui.TrackCanvas
 import app.yolaq.mobile.ui.YolakTheme
 import app.yolaq.mobile.web.WebScreen
@@ -252,6 +256,26 @@ private fun RecordScreen(
     }
 
     var sport by remember { mutableStateOf(SportType.DEFAULT) }
+    var showRoutePicker by remember { mutableStateOf(false) }
+    val followed by FollowedRoute.selected.collectAsState()
+
+    // Distance from the followed line, recomputed as fixes land. Null while
+    // free-running, or while still on the route.
+    val offRoute = followed?.points?.takeIf { it.isNotEmpty() }?.let { line ->
+        state.points.lastOrNull()?.let { here ->
+            RouteGuidance.distanceFromRoute(line, here)?.takeIf { it > RouteGuidance.OFF_ROUTE_METERS }
+        }
+    }
+
+    if (showRoutePicker) {
+        RoutePicker(
+            onDismiss = { showRoutePicker = false },
+            onSelected = { route ->
+                FollowedRoute.select(route)
+                showRoutePicker = false
+            },
+        )
+    }
 
     val requestPermissions = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -283,12 +307,14 @@ private fun RecordScreen(
             AcquiringNotice(state)
         } else {
             Metrics(state)
+            RouteStatus(routeName = followed?.name, offRouteMeters = offRoute)
+
             if (state.status != RecordingStatus.IDLE) {
                 Spacer(Modifier.height(16.dp))
                 // The shape of the line is the quickest answer to "is this
                 // thing actually recording?" — the one question worth asking
                 // mid-outing.
-                TrackCanvas(state.points)
+                TrackCanvas(points = state.points, route = followed?.points.orEmpty())
             }
         }
 
@@ -337,6 +363,13 @@ private fun RecordScreen(
             // arrives as a generic workout drops out of the sport filters on
             // challenges and segments.
             RecordingStatus.IDLE -> Column(modifier = Modifier.fillMaxWidth()) {
+                TextButton(onClick = { showRoutePicker = true }) {
+                    Text(
+                        followed?.name?.let { context.getString(R.string.route_following, it) }
+                            ?: context.getString(R.string.route_choose),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),

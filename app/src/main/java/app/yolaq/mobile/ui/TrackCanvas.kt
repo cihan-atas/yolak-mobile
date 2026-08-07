@@ -25,12 +25,21 @@ import app.yolaq.mobile.recording.TrackPoint
  * without the battery cost of a basemap (see [TrackProjection]).
  *
  * @param points The accepted fixes, oldest first.
+ * @param route The line being followed, drawn underneath so the two can be
+ *   compared at a glance — the whole point of following a route is seeing
+ *   your line diverge from it.
  * @param modifier Layout modifier.
  */
 @Composable
-fun TrackCanvas(points: List<TrackPoint>, modifier: Modifier = Modifier) {
+fun TrackCanvas(
+    points: List<TrackPoint>,
+    route: List<TrackPoint> = emptyList(),
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     val trackColor = MaterialTheme.colorScheme.primary
+    // Muted, so the recorded track reads as the live thing on top of a plan.
+    val routeColor = MaterialTheme.colorScheme.outline
     val startColor = MaterialTheme.colorScheme.tertiary
     val surface = MaterialTheme.colorScheme.surfaceVariant
 
@@ -40,7 +49,7 @@ fun TrackCanvas(points: List<TrackPoint>, modifier: Modifier = Modifier) {
             .height(200.dp),
         contentAlignment = Alignment.Center,
     ) {
-        if (points.size < 2) {
+        if (points.size < 2 && route.size < 2) {
             // One point is not a shape, and an empty canvas reads as a broken
             // screen rather than a recording that has just begun.
             Text(
@@ -51,12 +60,32 @@ fun TrackCanvas(points: List<TrackPoint>, modifier: Modifier = Modifier) {
         }
 
         Canvas(modifier = Modifier.fillMaxWidth().height(200.dp)) {
-            val projected = TrackProjection.project(
-                points = points,
+            // Both lines are projected together, so they share one frame and
+            // the drawn gap between them is the real gap on the ground.
+            val all = route + points
+            val frame = TrackProjection.project(
+                points = all,
                 width = size.width,
                 height = size.height,
                 padding = PADDING_PX,
             )
+            val routeShape = frame.take(route.size)
+            val projected = frame.drop(route.size)
+
+            if (routeShape.size > 1) {
+                drawPath(
+                    path = Path().apply {
+                        moveTo(routeShape.first().x, routeShape.first().y)
+                        routeShape.drop(1).forEach { lineTo(it.x, it.y) }
+                    },
+                    color = routeColor,
+                    style = Stroke(width = STROKE_PX * 0.8f),
+                )
+            }
+
+            if (projected.size < 2) {
+                return@Canvas
+            }
 
             drawPath(
                 path = Path().apply {
