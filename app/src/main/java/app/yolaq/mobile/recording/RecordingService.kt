@@ -70,6 +70,10 @@ class RecordingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Every command is logged: a recording that ends by itself is the
+        // worst failure this app has, and the first question is always whether
+        // something asked it to stop or it died on its own.
+        Log.i(TAG, "Komut: ${intent?.action ?: "(yeniden başlatma)"} flags=$flags startId=$startId")
         when (intent?.action) {
             ACTION_START -> startRecording(SportType.fromName(intent.getStringExtra(EXTRA_SPORT)))
             ACTION_PAUSE -> {

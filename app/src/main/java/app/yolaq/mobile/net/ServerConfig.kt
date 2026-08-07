@@ -5,24 +5,32 @@ import android.content.Context
 /**
  * Where to send recordings, and what to authenticate with.
  *
- * An API key rather than a session: the uploader runs from a background worker
- * long after the screen is gone, and a key scoped to `activities:upload` is the
- * credential the server already offers for exactly that. A full login arrives
- * with the WebView shell (phase 8, step 5); until then the key is what makes
- * the recorder useful.
+ * The user signs in with their username and password like anywhere else; the
+ * API key behind this is minted for them during login and never shown. It has
+ * to be a key rather than the login session because the uploader runs from a
+ * background worker long after the screen is gone, with nobody there to
+ * re-enter a password when a token expires.
  *
  * @property baseUrl Server origin, without a trailing slash (e.g. `https://yolaq.app`).
  * @property apiKey The server-issued key, sent as `X-API-Key`.
+ * @property username Who is signed in, for the account line on screen.
  */
 data class ServerConfig(
     val baseUrl: String,
     val apiKey: String,
+    val username: String = "",
 ) {
     /** Absolute URL of the live-tracking ingest endpoint. */
     val livePingUrl: String get() = "$baseUrl/api/v1/live/ping"
 
     /** Absolute URL of the activity file upload endpoint. */
     val uploadUrl: String get() = "$baseUrl/api/v1/activities/create/upload"
+
+    /** Absolute URL of the login endpoint. */
+    val loginUrl: String get() = "$baseUrl/api/v1/auth/login"
+
+    /** Absolute URL of the API key collection. */
+    val apiKeysUrl: String get() = "$baseUrl/api/v1/profile/api_keys"
 }
 
 /**
@@ -38,34 +46,82 @@ object ServerSettings {
     private const val PREFS = "server"
     private const val KEY_BASE_URL = "base_url"
     private const val KEY_API_KEY = "api_key"
+    private const val KEY_USERNAME = "username"
+    private const val KEY_WEB_COOKIE = "web_refresh_cookie"
 
     /**
-     * Loads the configured server.
+     * The server this app is for.
+     *
+     * Prefilled so signing in is a username and a password, nothing else. A
+     * different server can still be typed in; only someone running their own
+     * copy will ever need to.
+     */
+    const val DEFAULT_BASE_URL = "https://yolaq.app"
+
+    /**
+     * Loads the signed-in session.
      *
      * @param context Any context.
-     * @return The configuration, or null while the app is unconfigured.
+     * @return The configuration, or null while nobody is signed in.
      */
     fun load(context: Context): ServerConfig? {
-        val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefs = prefs(context)
         val baseUrl = prefs.getString(KEY_BASE_URL, null)?.takeIf { it.isNotBlank() } ?: return null
         val apiKey = prefs.getString(KEY_API_KEY, null)?.takeIf { it.isNotBlank() } ?: return null
-        return ServerConfig(baseUrl, apiKey)
+        return ServerConfig(baseUrl, apiKey, prefs.getString(KEY_USERNAME, "").orEmpty())
     }
 
     /**
-     * Saves the server settings, normalising the address first.
+     * Stores everything a completed login produced.
      *
      * @param context Any context.
-     * @param baseUrl Server address as the user typed it.
-     * @param apiKey The API key as the user pasted it.
+     * @param baseUrl Server address, already normalised.
+     * @param apiKey The key minted during login.
+     * @param username Who signed in.
+     * @param webRefreshCookie The web session cookie, for the web tab.
      */
-    fun save(context: Context, baseUrl: String, apiKey: String) {
-        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
+    fun save(
+        context: Context,
+        baseUrl: String,
+        apiKey: String,
+        username: String,
+        webRefreshCookie: String?,
+    ) {
+        prefs(context).edit()
             .putString(KEY_BASE_URL, normaliseBaseUrl(baseUrl))
             .putString(KEY_API_KEY, apiKey.trim())
+            .putString(KEY_USERNAME, username.trim())
+            .putString(KEY_WEB_COOKIE, webRefreshCookie)
             .apply()
     }
+
+    /**
+     * The web session cookie captured at login.
+     *
+     * Handed to the web tab so signing in once covers both halves of the app —
+     * the web view would otherwise show its own login screen straight after
+     * the user had just signed in.
+     *
+     * @param context Any context.
+     * @return The raw `Set-Cookie` value, or null when there is none.
+     */
+    fun webRefreshCookie(context: Context): String? =
+        prefs(context).getString(KEY_WEB_COOKIE, null)?.takeIf { it.isNotBlank() }
+
+    /**
+     * Signs out, forgetting the key and the web session.
+     *
+     * The queue is deliberately left alone: recordings waiting to upload are
+     * the user's, not the session's, and they upload after the next sign-in.
+     *
+     * @param context Any context.
+     */
+    fun clear(context: Context) {
+        prefs(context).edit().clear().apply()
+    }
+
+    private fun prefs(context: Context) =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     /**
      * Turns a typed address into an origin the URL builders can append to.

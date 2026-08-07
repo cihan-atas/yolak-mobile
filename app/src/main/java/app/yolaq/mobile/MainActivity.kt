@@ -5,9 +5,11 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,15 +19,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -40,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import app.yolaq.mobile.net.ServerSettings
@@ -51,9 +50,11 @@ import app.yolaq.mobile.recording.SportType
 import app.yolaq.mobile.sync.RecordingFinisher
 import app.yolaq.mobile.sync.Storage
 import app.yolaq.mobile.sync.UploadWorker
+import app.yolaq.mobile.ui.LoginScreen
 import app.yolaq.mobile.ui.TrackCanvas
 import app.yolaq.mobile.ui.YolakTheme
 import app.yolaq.mobile.web.WebScreen
+import app.yolaq.mobile.web.WebSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -90,60 +91,113 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** The two halves of the app. */
-private enum class Tab { RECORD, WEB }
-
 /**
- * The shell: recording on one tab, the web app on the other.
+ * The shell: yolak as it already is, with recording inside it.
  *
- * Both tabs stay alive rather than being swapped out — the web view keeps its
- * page and scroll position, and the recording screen is never rebuilt from
- * scratch mid-outing.
+ * The app *is* the web app — same screens, same navigation, nothing rebuilt in
+ * Compose and nothing to keep in sync. A second tab would have split one
+ * product into two halves and made the phone version the odd one out.
+ *
+ * Recording is the single thing a browser cannot do, so it is the single thing
+ * that is native: a button over the page opens it, and it closes back onto the
+ * page it came from.
  */
 @Composable
 private fun YolakApp() {
     val context = LocalContext.current
-    var tab by remember { mutableStateOf(Tab.RECORD) }
     val state by RecordingRepository.state.collectAsState()
+    var showRecorder by remember { mutableStateOf(false) }
 
-    Scaffold(
-        bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = tab == Tab.RECORD,
-                    onClick = { tab = Tab.RECORD },
-                    icon = {},
-                    label = { Text(context.getString(R.string.tab_record)) },
-                )
-                NavigationBarItem(
-                    selected = tab == Tab.WEB,
-                    onClick = { tab = Tab.WEB },
-                    icon = {},
-                    label = { Text(context.getString(R.string.tab_web)) },
-                )
-            }
-        },
-    ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            // The record screen is cheap to recompose (its state lives in
-            // RecordingRepository), so it simply leaves when not shown.
-            if (tab == Tab.RECORD) {
-                RecordScreen()
-            }
-            // The web screen stays composed so the WebView — and the page the
-            // user was on — survives tab switches. It hides itself via the
-            // view's own visibility; see WebScreen for why nothing gentler
-            // works on a platform view.
-            WebScreen(visible = tab == Tab.WEB)
+    // Nothing in the app works signed out — not uploading, not live tracking,
+    // not the web tab — so the login screen stands in front of all of it
+    // rather than being a setting to find later.
+    var session by remember { mutableStateOf(ServerSettings.load(context)) }
+    if (session == null) {
+        LoginScreen(
+            onSignedIn = {
+                session = ServerSettings.load(context)
+                // Anything recorded before signing in can go up now.
+                UploadWorker.schedule(context)
+            },
+        )
+        return
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Always composed, so the page and the user's place in it survive a
+        // trip to the recorder. It hides itself through the view's own
+        // visibility; see WebScreen for why nothing gentler works.
+        WebScreen(
+            visible = !showRecorder,
+            onRecordRequested = { showRecorder = true },
+        )
+
+        if (showRecorder) {
+            RecordScreen(
+                username = session?.username.orEmpty(),
+                onClose = { showRecorder = false },
+                onSignOut = {
+                    ServerSettings.clear(context)
+                    WebSession.clear(context)
+                    session = null
+                    showRecorder = false
+                },
+            )
+        } else if (state.status != RecordingStatus.IDLE) {
+            // Only while an outing is running. Idle, the way in is the record
+            // entry in the page's own navigation — floating furniture over
+            // someone else's layout is exactly what this replaced.
+            RecordingStrip(
+                state = state,
+                onClick = { showRecorder = true },
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
         }
     }
 
-    // Recording is the reason the app exists: if an outing starts while the
-    // web tab is open, the numbers should be what comes back into view.
+    // An outing beginning is worth interrupting the page for — and once it is
+    // running, the numbers are what the user came back to the phone to see.
     LaunchedEffect(state.status) {
         if (state.status == RecordingStatus.ACQUIRING) {
-            tab = Tab.RECORD
+            showRecorder = true
         }
+    }
+}
+
+/**
+ * A thin band across the top while an outing is running.
+ *
+ * Someone who wandered off into the feed mid-run needs to see at a glance that
+ * the recording is still going — that reassurance is worth a strip of screen,
+ * where an idle button hovering over the page was not.
+ *
+ * @param state The recording in progress.
+ * @param onClick Opens the recorder.
+ * @param modifier Layout modifier.
+ */
+@Composable
+private fun RecordingStrip(state: RecordingState, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+
+    Surface(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+    ) {
+        Text(
+            text = when (state.status) {
+                RecordingStatus.ACQUIRING -> context.getString(R.string.record_acquiring_short)
+                RecordingStatus.PAUSED -> context.getString(R.string.recording_paused)
+                else -> context.getString(
+                    R.string.strip_recording,
+                    state.distanceMeters / 1000.0,
+                )
+            },
+            style = MaterialTheme.typography.labelLarge,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        )
     }
 }
 
@@ -158,10 +212,21 @@ private fun requiredPermissions(): Array<String> =
         arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
     }
 
+/**
+ * The recorder, opened over the web app.
+ *
+ * @param username Who is signed in, shown beside the sign-out action.
+ * @param onClose Returns to the page underneath.
+ * @param onSignOut Forgets the session and returns to the login screen.
+ */
 @Composable
-private fun RecordScreen() {
+private fun RecordScreen(username: String, onClose: () -> Unit, onSignOut: () -> Unit) {
     val context = LocalContext.current
     val state by RecordingRepository.state.collectAsState()
+
+    // Back means "put this away", not "leave the app" — the recording carries
+    // on either way, since it lives in the service.
+    BackHandler(enabled = true, onBack = onClose)
 
     var hasPermission by remember {
         mutableStateOf(
@@ -171,7 +236,6 @@ private fun RecordScreen() {
     }
 
     var sport by remember { mutableStateOf(SportType.DEFAULT) }
-    var showSettings by remember { mutableStateOf(false) }
 
     val requestPermissions = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -182,19 +246,20 @@ private fun RecordScreen() {
         }
     }
 
-    if (showSettings) {
-        ServerSettingsDialog(onDismiss = { showSettings = false })
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // Opaque: this sits on top of the WebView, and anything less would
+            // show the page through it.
+            .background(MaterialTheme.colorScheme.surface)
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text(text = "yolak", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(24.dp))
+        TextButton(onClick = onClose, modifier = Modifier.align(Alignment.Start)) {
+            Text(context.getString(R.string.record_close))
+        }
+        Spacer(Modifier.height(8.dp))
 
         if (state.status == RecordingStatus.ACQUIRING) {
             AcquiringNotice(state)
@@ -329,8 +394,13 @@ private fun RecordScreen() {
         Spacer(Modifier.height(24.dp))
         PendingUploads()
 
-        TextButton(onClick = { showSettings = true }) {
-            Text(stringResourceCompat(context, R.string.settings_open))
+        // Signing out mid-recording would leave the service streaming to a
+        // server it can no longer authenticate against, so it is offered only
+        // when nothing is being recorded.
+        if (state.status == RecordingStatus.IDLE) {
+            TextButton(onClick = onSignOut) {
+                Text(context.getString(R.string.account_sign_out, username))
+            }
         }
     }
 }
@@ -364,69 +434,6 @@ private fun PendingUploads() {
         )
         Spacer(Modifier.height(8.dp))
     }
-}
-
-/**
- * Server address and API key.
- *
- * A key rather than a username and password: the uploader runs from a
- * background worker with no screen to log in on, and the server already issues
- * keys scoped to `activities:upload` for exactly this. A real login arrives
- * with the WebView shell.
- *
- * @param onDismiss Closes the dialog.
- */
-@Composable
-private fun ServerSettingsDialog(onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    val existing = remember { ServerSettings.load(context) }
-    var baseUrl by remember { mutableStateOf(existing?.baseUrl ?: "") }
-    var apiKey by remember { mutableStateOf(existing?.apiKey ?: "") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(context.getString(R.string.settings_title)) },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = baseUrl,
-                    onValueChange = { baseUrl = it },
-                    label = { Text(context.getString(R.string.settings_server)) },
-                    placeholder = { Text("yolaq.app") },
-                    singleLine = true,
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it },
-                    label = { Text(context.getString(R.string.settings_api_key)) },
-                    singleLine = true,
-                )
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = context.getString(R.string.settings_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    ServerSettings.save(context, baseUrl, apiKey)
-                    // Whatever was stranded for want of a server can go now.
-                    UploadWorker.schedule(context)
-                    onDismiss()
-                },
-            ) {
-                Text(context.getString(R.string.settings_save))
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(context.getString(R.string.record_cancel))
-            }
-        },
-    )
 }
 
 /**
@@ -494,7 +501,10 @@ private fun Metrics(state: RecordingState) {
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            text = String.format(Locale.US, "%.2f km", km),
+            // Three decimals: at two, a slow walk's first hundred metres tick
+            // over in jumps of 10 m and the screen looks stuck. Metre
+            // resolution shows the distance actually moving.
+            text = String.format(Locale.US, "%.3f km", km),
             style = MaterialTheme.typography.displaySmall,
         )
         Spacer(Modifier.height(8.dp))

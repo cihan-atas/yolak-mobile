@@ -8,7 +8,7 @@
     <string name="recording_waiting_for_fix">GPS bekleniyor…</string>
     <string name="recording_weak_signal">Zayıf GPS sinyali</string>
     <string name="recording_paused">Duraklatıldı</string>
-    <string name="recording_progress">%1$.2f km · %2$d dk</string>
+    <string name="recording_progress">%1$.3f km · %2$d dk</string>
     <string name="recording_acquiring_accuracy">GPS sinyali bekleniyor (±%1$.0f m)</string>
 
     <!-- Recording screen -->
@@ -48,18 +48,21 @@
     <string name="activity_name">%1$s · %2$s</string>
     <string name="upload_pending">%1$d kayıt yüklenmeyi bekliyor</string>
 
-    <!-- Server settings -->
-    <string name="settings_open">Sunucu ayarları</string>
-    <string name="settings_title">Sunucu</string>
-    <string name="settings_server">Adres</string>
-    <string name="settings_api_key">API anahtarı</string>
-    <string name="settings_hint">Anahtarı yolak\'ta Ayarlar → Entegrasyonlar bölümünden,
-        activities:upload yetkisiyle oluştur.</string>
-    <string name="settings_save">Kaydet</string>
+    <!-- Giriş -->
+    <string name="login_subtitle">Hesabınla giriş yap</string>
+    <string name="login_username">Kullanıcı adı</string>
+    <string name="login_password">Parola</string>
+    <string name="login_server">Sunucu adresi</string>
+    <string name="login_submit">Giriş yap</string>
+    <string name="login_other_server">Başka bir sunucu</string>
+    <string name="login_mfa_unsupported">Bu hesapta iki adımlı doğrulama açık;
+        uygulama henüz desteklemiyor.</string>
+    <string name="account_sign_out">%1$s · çıkış yap</string>
 
-    <!-- Shell -->
-    <string name="tab_record">Kayıt</string>
-    <string name="tab_web">yolak</string>
+    <!-- Kabuk -->
+    <string name="record_close">‹ Kapat</string>
+    <string name="record_acquiring_short">GPS aranıyor…</string>
+    <string name="strip_recording">● Kayıt sürüyor · %1$.3f km</string>
     <string name="track_waiting">Rota ilk noktalarla çizilecek</string>
     <string name="web_no_server">Sunucu ayarlanmadı</string>
     <string name="web_no_server_hint">Kayıt sekmesindeki “Sunucu ayarları”ndan adresi ve

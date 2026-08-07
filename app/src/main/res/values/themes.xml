@@ -1,4 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Yolak" parent="android:Theme.Material.Light.NoActionBar" />
+    <!--
+      isLightTheme is what a WebView reports to the page as
+      prefers-color-scheme. The web app switches itself to dark on that media
+      query alone, so this attribute — not any WebView setting — is what makes
+      the web tab match the phone. Without the values-night variant beside
+      this one, the page stays light while the rest of the phone is dark.
+    -->
+    <style name="Theme.Yolak" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:isLightTheme">true</item>
+    </style>
 </resources>
