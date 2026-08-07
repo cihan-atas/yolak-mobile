@@ -54,4 +54,12 @@
     <string name="settings_hint">Anahtarı yolak\'ta Ayarlar → Entegrasyonlar bölümünden,
         activities:upload yetkisiyle oluştur.</string>
     <string name="settings_save">Kaydet</string>
+
+    <!-- Shell -->
+    <string name="tab_record">Kayıt</string>
+    <string name="tab_web">yolak</string>
+    <string name="track_waiting">Rota ilk noktalarla çizilecek</string>
+    <string name="web_no_server">Sunucu ayarlanmadı</string>
+    <string name="web_no_server_hint">Kayıt sekmesindeki “Sunucu ayarları”ndan adresi ve
+        API anahtarını gir.</string>
 </resources>

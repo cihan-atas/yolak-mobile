@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,12 +17,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -47,6 +52,8 @@ import app.yolaq.mobile.recording.SportType
 import app.yolaq.mobile.sync.RecordingFinisher
 import app.yolaq.mobile.sync.Storage
 import app.yolaq.mobile.sync.UploadWorker
+import app.yolaq.mobile.ui.TrackCanvas
+import app.yolaq.mobile.web.WebScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -76,9 +83,66 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    RecordScreen()
+                    YolakApp()
                 }
             }
+        }
+    }
+}
+
+/** The two halves of the app. */
+private enum class Tab { RECORD, WEB }
+
+/**
+ * The shell: recording on one tab, the web app on the other.
+ *
+ * Both tabs stay alive rather than being swapped out — the web view keeps its
+ * page and scroll position, and the recording screen is never rebuilt from
+ * scratch mid-outing.
+ */
+@Composable
+private fun YolakApp() {
+    val context = LocalContext.current
+    var tab by remember { mutableStateOf(Tab.RECORD) }
+    val state by RecordingRepository.state.collectAsState()
+
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = tab == Tab.RECORD,
+                    onClick = { tab = Tab.RECORD },
+                    icon = {},
+                    label = { Text(context.getString(R.string.tab_record)) },
+                )
+                NavigationBarItem(
+                    selected = tab == Tab.WEB,
+                    onClick = { tab = Tab.WEB },
+                    icon = {},
+                    label = { Text(context.getString(R.string.tab_web)) },
+                )
+            }
+        },
+    ) { padding ->
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            // Kept in the tree while hidden: rebuilding the web view on every
+            // tab switch would reload the page and lose the user's place, and
+            // rebuilding the recording screen mid-outing would restart its
+            // clock ticker for no reason.
+            Box(modifier = if (tab == Tab.RECORD) Modifier.fillMaxSize() else Modifier.size(0.dp)) {
+                RecordScreen()
+            }
+            Box(modifier = if (tab == Tab.WEB) Modifier.fillMaxSize() else Modifier.size(0.dp)) {
+                WebScreen()
+            }
+        }
+    }
+
+    // Recording is the reason the app exists: if an outing starts while the
+    // web tab is open, the numbers should be what comes back into view.
+    LaunchedEffect(state.status) {
+        if (state.status == RecordingStatus.ACQUIRING) {
+            tab = Tab.RECORD
         }
     }
 }
@@ -136,6 +200,13 @@ private fun RecordScreen() {
             AcquiringNotice(state)
         } else {
             Metrics(state)
+            if (state.status != RecordingStatus.IDLE) {
+                Spacer(Modifier.height(16.dp))
+                // The shape of the line is the quickest answer to "is this
+                // thing actually recording?" — the one question worth asking
+                // mid-outing.
+                TrackCanvas(state.points)
+            }
         }
 
         Spacer(Modifier.height(32.dp))
