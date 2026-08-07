@@ -50,6 +50,8 @@ import app.yolaq.mobile.recording.SportType
 import app.yolaq.mobile.sync.RecordingFinisher
 import app.yolaq.mobile.sync.Storage
 import app.yolaq.mobile.sync.UploadWorker
+import app.yolaq.mobile.ui.AppBottomBar
+import app.yolaq.mobile.ui.AppTopBar
 import app.yolaq.mobile.ui.LoginScreen
 import app.yolaq.mobile.ui.TrackCanvas
 import app.yolaq.mobile.ui.YolakTheme
@@ -107,6 +109,9 @@ private fun YolakApp() {
     val context = LocalContext.current
     val state by RecordingRepository.state.collectAsState()
     var showRecorder by remember { mutableStateOf(false) }
+    // Handed over by the web half once its view exists; lets the recorder's
+    // bottom bar move the page underneath instead of merely closing.
+    var navigateWeb by remember { mutableStateOf<((String) -> Unit)?>(null) }
 
     // Nothing in the app works signed out — not uploading, not live tracking,
     // not the web tab — so the login screen stands in front of all of it
@@ -130,12 +135,17 @@ private fun YolakApp() {
         WebScreen(
             visible = !showRecorder,
             onRecordRequested = { showRecorder = true },
+            onNavigatorReady = { navigateWeb = it },
         )
 
         if (showRecorder) {
             RecordScreen(
                 username = session?.username.orEmpty(),
                 onClose = { showRecorder = false },
+                onNavigate = { path ->
+                    showRecorder = false
+                    navigateWeb?.invoke(path)
+                },
                 onSignOut = {
                     ServerSettings.clear(context)
                     WebSession.clear(context)
@@ -217,10 +227,16 @@ private fun requiredPermissions(): Array<String> =
  *
  * @param username Who is signed in, shown beside the sign-out action.
  * @param onClose Returns to the page underneath.
+ * @param onNavigate Closes the recorder and opens a page in the web half.
  * @param onSignOut Forgets the session and returns to the login screen.
  */
 @Composable
-private fun RecordScreen(username: String, onClose: () -> Unit, onSignOut: () -> Unit) {
+private fun RecordScreen(
+    username: String,
+    onClose: () -> Unit,
+    onNavigate: (String) -> Unit,
+    onSignOut: () -> Unit,
+) {
     val context = LocalContext.current
     val state by RecordingRepository.state.collectAsState()
 
@@ -251,16 +267,18 @@ private fun RecordScreen(username: String, onClose: () -> Unit, onSignOut: () ->
             .fillMaxSize()
             // Opaque: this sits on top of the WebView, and anything less would
             // show the page through it.
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+            .background(MaterialTheme.colorScheme.surface),
     ) {
-        TextButton(onClick = onClose, modifier = Modifier.align(Alignment.Start)) {
-            Text(context.getString(R.string.record_close))
-        }
-        Spacer(Modifier.height(8.dp))
+        AppTopBar()
 
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
         if (state.status == RecordingStatus.ACQUIRING) {
             AcquiringNotice(state)
         } else {
@@ -402,6 +420,11 @@ private fun RecordScreen(username: String, onClose: () -> Unit, onSignOut: () ->
                 Text(context.getString(R.string.account_sign_out, username))
             }
         }
+        }
+
+        // The same bar the web half shows, so the recorder is a screen of this
+        // app rather than something that took the app over.
+        AppBottomBar(onNavigate = onNavigate)
     }
 }
 

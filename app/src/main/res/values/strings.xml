@@ -60,7 +60,12 @@
     <string name="account_sign_out">%1$s · çıkış yap</string>
 
     <!-- Kabuk -->
-    <string name="record_close">‹ Kapat</string>
+    <string name="nav_home">Ana sayfa</string>
+    <string name="nav_gear">Ekipman</string>
+    <string name="nav_health">Sağlık</string>
+    <string name="nav_record">Kaydet</string>
+    <string name="nav_alerts">Uyarılar</string>
+    <string name="nav_menu">Menü</string>
     <string name="record_acquiring_short">GPS aranıyor…</string>
     <string name="strip_recording">● Kayıt sürüyor · %1$.3f km</string>
     <string name="track_waiting">Rota ilk noktalarla çizilecek</string>

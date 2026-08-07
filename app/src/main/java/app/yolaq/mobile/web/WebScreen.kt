@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,10 +58,17 @@ private const val TAG = "WebScreen"
  *
  * @param visible Whether the page is the thing on screen.
  * @param onRecordRequested Called when the page's record entry is tapped.
+ * @param onNavigatorReady Hands back a function that navigates the page, so
+ *   the recorder's own bar can move the app underneath it.
  * @param modifier Layout modifier.
  */
 @Composable
-fun WebScreen(visible: Boolean, onRecordRequested: () -> Unit, modifier: Modifier = Modifier) {
+fun WebScreen(
+    visible: Boolean,
+    onRecordRequested: () -> Unit,
+    onNavigatorReady: ((String) -> Unit) -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     // Read on every composition, not remembered: the user may configure the
     // server while this tab is already alive, and a cached null would leave
@@ -221,6 +229,18 @@ fun WebScreen(visible: Boolean, onRecordRequested: () -> Unit, modifier: Modifie
 
             loadUrl(config.baseUrl)
         }
+    }
+
+    // Handed up once the view exists, so the recorder's bar can move the page
+    // underneath it.
+    //
+    // A plain load rather than driving the page's own router from the outside:
+    // pushing history state and firing popstate looked cheaper — no reload —
+    // but the router ignored it and the tap did nothing at all. Leaving the
+    // recorder is a rare enough moment to spend a page load on, and a load is
+    // the one thing that cannot silently fail to navigate.
+    LaunchedEffect(webView) {
+        onNavigatorReady { path -> webView.loadUrl("${config.baseUrl}$path") }
     }
 
     // Back walks the web history first — but only while this tab is the one
