@@ -55,6 +55,7 @@ import app.yolaq.mobile.sync.UploadWorker
 import app.yolaq.mobile.ui.AppBottomBar
 import app.yolaq.mobile.ui.AppTopBar
 import app.yolaq.mobile.ui.LoginScreen
+import app.yolaq.mobile.ui.RecorderMap
 import app.yolaq.mobile.ui.RoutePicker
 import app.yolaq.mobile.ui.RouteStatus
 import app.yolaq.mobile.ui.TrackCanvas
@@ -144,17 +145,10 @@ private fun YolakApp() {
 
         if (showRecorder) {
             RecordScreen(
-                username = session?.username.orEmpty(),
                 onClose = { showRecorder = false },
                 onNavigate = { path ->
                     showRecorder = false
                     navigateWeb?.invoke(path)
-                },
-                onSignOut = {
-                    ServerSettings.clear(context)
-                    WebSession.clear(context)
-                    session = null
-                    showRecorder = false
                 },
             )
         } else if (state.status != RecordingStatus.IDLE) {
@@ -229,20 +223,17 @@ private fun requiredPermissions(): Array<String> =
 /**
  * The recorder, opened over the web app.
  *
- * @param username Who is signed in, shown beside the sign-out action.
+ * Signing out lives in the web menu, not here: the recorder is one screen of
+ * the app, and account actions belong where every other setting is.
+ *
  * @param onClose Returns to the page underneath.
  * @param onNavigate Closes the recorder and opens a page in the web half.
- * @param onSignOut Forgets the session and returns to the login screen.
  */
 @Composable
-private fun RecordScreen(
-    username: String,
-    onClose: () -> Unit,
-    onNavigate: (String) -> Unit,
-    onSignOut: () -> Unit,
-) {
+private fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
     val context = LocalContext.current
     val state by RecordingRepository.state.collectAsState()
+    val session = remember { ServerSettings.load(context) }
 
     // Back means "put this away", not "leave the app" — the recording carries
     // on either way, since it lives in the service.
@@ -258,12 +249,22 @@ private fun RecordScreen(
     var sport by remember { mutableStateOf(SportType.DEFAULT) }
     var showRoutePicker by remember { mutableStateOf(false) }
     val followed by FollowedRoute.selected.collectAsState()
+    val outcome by RecordingFinisher.lastOutcome.collectAsState()
 
-    // Distance from the followed line, recomputed as fixes land. Null while
-    // free-running, or while still on the route.
     val offRoute = followed?.points?.takeIf { it.isNotEmpty() }?.let { line ->
         state.points.lastOrNull()?.let { here ->
-            RouteGuidance.distanceFromRoute(line, here)?.takeIf { it > RouteGuidance.OFF_ROUTE_METERS }
+            RouteGuidance.distanceFromRoute(line, here)
+                ?.takeIf { it > RouteGuidance.OFF_ROUTE_METERS }
+        }
+    }
+
+    val requestPermissions = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { granted ->
+        hasPermission = granted[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        if (hasPermission) {
+            RecordingFinisher.clearOutcome()
+            RecordingService.send(context, RecordingService.ACTION_START, sport)
         }
     }
 
@@ -277,187 +278,326 @@ private fun RecordScreen(
         )
     }
 
-    val requestPermissions = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) { granted ->
-        hasPermission = granted[Manifest.permission.ACCESS_FINE_LOCATION] == true
-        if (hasPermission) {
-            RecordingService.send(context, RecordingService.ACTION_START, sport)
-        }
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
-            // Opaque: this sits on top of the WebView, and anything less would
-            // show the page through it.
             .background(MaterialTheme.colorScheme.surface),
     ) {
         AppTopBar()
 
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-        if (state.status == RecordingStatus.ACQUIRING) {
-            AcquiringNotice(state)
-        } else {
-            Metrics(state)
-            RouteStatus(routeName = followed?.name, offRouteMeters = offRoute)
-
-            if (state.status != RecordingStatus.IDLE) {
-                Spacer(Modifier.height(16.dp))
-                // The shape of the line is the quickest answer to "is this
-                // thing actually recording?" — the one question worth asking
-                // mid-outing.
-                TrackCanvas(points = state.points, route = followed?.points.orEmpty())
+        // The map is the screen, not a panel on it. Everything else floats
+        // over it: a recording is something you glance at while moving, and a
+        // postage-stamp map with the numbers stacked underneath answers
+        // neither "where am I" nor "how am I doing" at arm's length.
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            if (session != null) {
+                RecorderMap(
+                    config = session,
+                    points = state.points,
+                    route = followed?.points.orEmpty(),
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                TrackCanvas(
+                    points = state.points,
+                    route = followed?.points.orEmpty(),
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
-        }
 
-        Spacer(Modifier.height(32.dp))
+            StatsOverlay(
+                state = state,
+                routeName = followed?.name,
+                offRouteMeters = offRoute,
+                modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(12.dp),
+            )
 
-        when (state.status) {
-            // Waiting for a usable fix. No metrics yet and no pause button —
-            // there is nothing to pause — but always a way out, and after a
-            // while a way past, since indoors the threshold may never be met.
-            RecordingStatus.ACQUIRING -> {
-                var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-                LaunchedEffect(state.status) {
-                    while (state.status == RecordingStatus.ACQUIRING) {
-                        now = System.currentTimeMillis()
-                        delay(1_000)
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    OutlinedButton(
-                        onClick = { RecordingService.send(context, RecordingService.ACTION_STOP) },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(stringResourceCompat(context, R.string.record_cancel))
-                    }
-                    if (state.canOverrideAcquire(now)) {
-                        Button(
-                            onClick = {
-                                RecordingService.send(
-                                    context,
-                                    RecordingService.ACTION_START_ANYWAY,
-                                )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                outcome?.let { last ->
+                    OverlayCard {
+                        Text(
+                            text = when (last) {
+                                is RecordingFinisher.Outcome.Queued ->
+                                    context.getString(R.string.outcome_queued, last.points)
+
+                                is RecordingFinisher.Outcome.TooShort ->
+                                    context.getString(R.string.outcome_too_short)
                             },
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text(stringResourceCompat(context, R.string.record_start_anyway))
-                        }
-                    }
-                }
-            }
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            color = when (last) {
+                                is RecordingFinisher.Outcome.Queued ->
+                                    MaterialTheme.colorScheme.onSurfaceVariant
 
-            // The sport is chosen before starting rather than corrected on the
-            // web afterwards: it travels in the GPX, and an activity that
-            // arrives as a generic workout drops out of the sport filters on
-            // challenges and segments.
-            RecordingStatus.IDLE -> Column(modifier = Modifier.fillMaxWidth()) {
-                TextButton(onClick = { showRoutePicker = true }) {
-                    Text(
-                        followed?.name?.let { context.getString(R.string.route_following, it) }
-                            ?: context.getString(R.string.route_choose),
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    SportType.entries.forEach { option ->
-                        FilterChip(
-                            selected = option == sport,
-                            onClick = { sport = option },
-                            label = { Text(context.getString(option.labelRes)) },
+                                is RecordingFinisher.Outcome.TooShort ->
+                                    MaterialTheme.colorScheme.error
+                            },
                         )
                     }
+                    Spacer(Modifier.height(8.dp))
                 }
-                Spacer(Modifier.height(16.dp))
-                Button(
-                    onClick = {
+
+                if (state.status == RecordingStatus.IDLE) {
+                    OverlayCard {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                SportType.entries.forEach { option ->
+                                    FilterChip(
+                                        selected = option == sport,
+                                        onClick = { sport = option },
+                                        label = { Text(context.getString(option.labelRes)) },
+                                    )
+                                }
+                            }
+                            TextButton(onClick = { showRoutePicker = true }) {
+                                Text(
+                                    context.getString(
+                                        if (followed == null) {
+                                            R.string.route_choose
+                                        } else {
+                                            R.string.route_change
+                                        },
+                                    ),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                RecordControls(
+                    status = state.status,
+                    canOverride = state.canOverrideAcquire(),
+                    onStart = {
                         if (hasPermission) {
+                            RecordingFinisher.clearOutcome()
                             RecordingService.send(context, RecordingService.ACTION_START, sport)
                         } else {
                             requestPermissions.launch(requiredPermissions())
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResourceCompat(context, R.string.record_start))
-                }
-            }
+                    onAction = { action -> RecordingService.send(context, action) },
+                )
 
-            RecordingStatus.RECORDING -> Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                OutlinedButton(
-                    onClick = { RecordingService.send(context, RecordingService.ACTION_PAUSE) },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(stringResourceCompat(context, R.string.record_pause))
-                }
-                Button(
-                    onClick = { RecordingService.send(context, RecordingService.ACTION_STOP) },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(stringResourceCompat(context, R.string.record_stop))
-                }
-            }
-
-            RecordingStatus.PAUSED -> Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Button(
-                    onClick = { RecordingService.send(context, RecordingService.ACTION_RESUME) },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(stringResourceCompat(context, R.string.record_resume))
-                }
-                OutlinedButton(
-                    onClick = { RecordingService.send(context, RecordingService.ACTION_STOP) },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(stringResourceCompat(context, R.string.record_stop))
+                if (!hasPermission) {
+                    Spacer(Modifier.height(8.dp))
+                    OverlayCard {
+                        Text(
+                            text = stringResourceCompat(context, R.string.record_permission_needed),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             }
         }
 
-        if (!hasPermission) {
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = stringResourceCompat(context, R.string.record_permission_needed),
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-
-        Spacer(Modifier.height(24.dp))
-        PendingUploads()
-
-        // Signing out mid-recording would leave the service streaming to a
-        // server it can no longer authenticate against, so it is offered only
-        // when nothing is being recorded.
-        if (state.status == RecordingStatus.IDLE) {
-            TextButton(onClick = onSignOut) {
-                Text(context.getString(R.string.account_sign_out, username))
-            }
-        }
-        }
-
-        // The same bar the web half shows, so the recorder is a screen of this
-        // app rather than something that took the app over.
         AppBottomBar(onNavigate = onNavigate)
+    }
+}
+
+/**
+ * A translucent slab for anything floating over the map.
+ *
+ * Readable over streets and parks alike without hiding them: the map is the
+ * context these numbers belong to, and a solid panel would take it away.
+ *
+ * @param content What sits on the slab.
+ */
+@Composable
+private fun OverlayCard(content: @Composable () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        shape = MaterialTheme.shapes.large,
+        tonalElevation = 3.dp,
+    ) {
+        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { content() }
+    }
+}
+
+/**
+ * The live numbers, over the map.
+ *
+ * Distance leads because it is the one people look for; time and pace sit
+ * beside it. While the receiver is still settling this says so instead,
+ * because a row of zeroes reads as a broken recording.
+ *
+ * @param state The recording in progress.
+ * @param routeName The route being followed, if any.
+ * @param offRouteMeters How far off that route, when off it.
+ * @param modifier Layout modifier.
+ */
+@Composable
+private fun StatsOverlay(
+    state: RecordingState,
+    routeName: String?,
+    offRouteMeters: Double?,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+
+    // The clock has to tick on its own: state only changes when a fix lands,
+    // and a recording with a weak signal would otherwise look frozen.
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(state.status) {
+        while (state.status == RecordingStatus.RECORDING) {
+            now = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
+
+    OverlayCard {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            if (state.status == RecordingStatus.ACQUIRING) {
+                Text(
+                    text = state.lastAccuracy
+                        ?.let { context.getString(R.string.record_acquiring_accuracy, it) }
+                        ?: stringResourceCompat(context, R.string.record_acquiring),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                return@Column
+            }
+
+            val totalSeconds = state.elapsedMillis(now) / 1000
+            Text(
+                text = String.format(Locale.US, "%.3f km", state.distanceMeters / 1000.0),
+                style = MaterialTheme.typography.displaySmall,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                Text(
+                    text = String.format(
+                        Locale.US,
+                        "%02d:%02d:%02d",
+                        totalSeconds / 3600,
+                        (totalSeconds % 3600) / 60,
+                        totalSeconds % 60,
+                    ),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = state.currentPaceSecondsPerKm?.let {
+                        val seconds = it.toInt()
+                        context.getString(R.string.record_pace_value, seconds / 60, seconds % 60)
+                    } ?: stringResourceCompat(context, R.string.record_pace_idle),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+
+            when {
+                offRouteMeters != null -> Text(
+                    text = context.getString(R.string.route_off, offRouteMeters),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+
+                routeName != null -> Text(
+                    text = context.getString(R.string.route_following, routeName),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                state.weakSignal && state.lastAccuracy != null -> Text(
+                    text = context.getString(R.string.record_weak_signal, state.lastAccuracy),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+
+                else -> Text(
+                    text = context.getString(
+                        R.string.record_points_count,
+                        state.points.size,
+                        state.lastAccuracy ?: 0f,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Start, pause, resume, finish — whichever the recording allows right now.
+ *
+ * @param status Where the recording sits.
+ * @param canOverride Whether the signal wait has dragged on long enough to skip.
+ * @param onStart Begins a recording.
+ * @param onAction Sends one of the service's other commands.
+ */
+@Composable
+private fun RecordControls(
+    status: RecordingStatus,
+    canOverride: Boolean,
+    onStart: () -> Unit,
+    onAction: (String) -> Unit,
+) {
+    val context = LocalContext.current
+
+    when (status) {
+        RecordingStatus.IDLE -> Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResourceCompat(context, R.string.record_start))
+        }
+
+        RecordingStatus.ACQUIRING -> Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedButton(
+                onClick = { onAction(RecordingService.ACTION_STOP) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResourceCompat(context, R.string.record_cancel))
+            }
+            if (canOverride) {
+                Button(
+                    onClick = { onAction(RecordingService.ACTION_START_ANYWAY) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResourceCompat(context, R.string.record_start_anyway))
+                }
+            }
+        }
+
+        RecordingStatus.RECORDING -> Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            OutlinedButton(
+                onClick = { onAction(RecordingService.ACTION_PAUSE) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResourceCompat(context, R.string.record_pause))
+            }
+            Button(
+                onClick = { onAction(RecordingService.ACTION_STOP) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResourceCompat(context, R.string.record_stop))
+            }
+        }
+
+        RecordingStatus.PAUSED -> Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Button(
+                onClick = { onAction(RecordingService.ACTION_RESUME) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResourceCompat(context, R.string.record_resume))
+            }
+            OutlinedButton(
+                onClick = { onAction(RecordingService.ACTION_STOP) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResourceCompat(context, R.string.record_stop))
+            }
+        }
     }
 }
 

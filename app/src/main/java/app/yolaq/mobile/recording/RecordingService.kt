@@ -199,6 +199,9 @@ class RecordingService : Service() {
      * record when it is not, which is the worst thing it could do.
      */
     private fun stopRecording() {
+        // Cancelling from the signal-wait is not a failed recording; it never
+        // started. Remembered before stop() resets the state.
+        val cancelledBeforeStart = RecordingRepository.state.value.status == RecordingStatus.ACQUIRING
         runCatching { locationManager.removeUpdates(listener) }
         broadcaster?.stop()
         broadcaster = null
@@ -215,7 +218,7 @@ class RecordingService : Service() {
 
         // Queue before tearing anything down, and only clear the journal once
         // the track is safely written somewhere else.
-        RecordingFinisher.queue(this, finished.points, sport)
+        RecordingFinisher.queue(this, finished.points, sport, reportOutcome = !cancelledBeforeStart)
         journal.clear()
 
         stopForeground(STOP_FOREGROUND_REMOVE)

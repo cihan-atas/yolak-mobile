@@ -9,6 +9,9 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Turns a track into a queued upload.
@@ -21,6 +24,44 @@ import java.util.Locale
 object RecordingFinisher {
 
     private const val TAG = "RecordingFinisher"
+
+    /**
+     * How the last finished recording ended.
+     *
+     * Exists because the alternative is silence: a recording that captured no
+     * usable fix is dropped on the floor, and without this the athlete presses
+     * stop, sees the screen reset, and finds nothing on the web — with no way
+     * to tell a lost outing from one that was never recorded. The screen shows
+     * this and clears it on the next start.
+     */
+    sealed interface Outcome {
+        /**
+         * The track is on disk and waiting to upload.
+         *
+         * @property points How many fixes it holds.
+         */
+        data class Queued(val points: Int) : Outcome
+
+        /**
+         * Nothing was kept: the recording never got enough fixes.
+         *
+         * Almost always means indoors or no sky — the receiver produced
+         * nothing to record, not that the app failed.
+         *
+         * @property points How many fixes there were, usually zero.
+         */
+        data class TooShort(val points: Int) : Outcome
+    }
+
+    private val _lastOutcome = MutableStateFlow<Outcome?>(null)
+
+    /** What became of the last recording, for the screen to explain. */
+    val lastOutcome: StateFlow<Outcome?> = _lastOutcome.asStateFlow()
+
+    /** Clears the message, called when a new recording begins. */
+    fun clearOutcome() {
+        _lastOutcome.value = null
+    }
 
     /**
      * A track this short is a false start, not an outing.
@@ -37,11 +78,23 @@ object RecordingFinisher {
      * @param context Any context.
      * @param points The accepted fixes, oldest first.
      * @param sport What was recorded.
+     * @param reportOutcome Whether to surface the result on screen.
      * @return The queued file, or null when the track was too short to keep.
      */
-    fun queue(context: Context, points: List<TrackPoint>, sport: SportType): File? {
+    fun queue(
+        context: Context,
+        points: List<TrackPoint>,
+        sport: SportType,
+        reportOutcome: Boolean = true,
+    ): File? {
         if (points.size < MIN_POINTS) {
             Log.i(TAG, "Kayıt çok kısa (${points.size} nokta), kuyruğa alınmadı")
+            // Not reported when the athlete backed out before the recording
+            // ever began: telling someone who pressed cancel that their
+            // recording failed is noise dressed as an error.
+            if (reportOutcome) {
+                _lastOutcome.value = Outcome.TooShort(points.size)
+            }
             return null
         }
 
@@ -50,6 +103,7 @@ object RecordingFinisher {
         val file = Storage.queue(context).enqueue(gpx, startedAt)
         Log.i(TAG, "Kuyruğa alındı: ${file.name} (${points.size} nokta)")
 
+        _lastOutcome.value = Outcome.Queued(points.size)
         UploadWorker.schedule(context)
         return file
     }

@@ -59,11 +59,18 @@
         uygulama henüz desteklemiyor.</string>
     <string name="account_sign_out">%1$s · çıkış yap</string>
 
+    <!-- Kayıt sonucu -->
+    <string name="outcome_queued">Kayıt alındı (%1$d nokta) — yükleniyor</string>
+    <string name="outcome_too_short">Kayıt yüklenmedi: GPS noktası alınamadı.
+        Kapalı alanda alıcı konum üretemez; açık havada tekrar dene.</string>
+
     <!-- Rota takibi -->
     <string name="route_pick_title">Takip edilecek rota</string>
     <string name="route_pick_empty">Henüz rota yok. Web arayüzünden çizebilirsin.</string>
     <string name="route_pick_none">Rotasız kaydet</string>
+    <string name="map_recenter">Konumuma dön</string>
     <string name="route_choose">Rota seç</string>
+    <string name="route_change">Rotayı değiştir</string>
     <string name="route_following">%1$s takip ediliyor</string>
     <string name="route_off">Rotadan %1$.0f m uzaktasın</string>
 
