@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -127,6 +128,14 @@ fun WebScreen(visible: Boolean, onRecordRequested: () -> Unit, modifier: Modifie
             // The session cookie and the app's local state live here; without
             // storage every launch would land back on the login screen.
             settings.domStorageEnabled = true
+            // A bare WebView ignores <meta name="viewport"> — it is off by
+            // default, unlike every actual browser. The page then lays out
+            // against a viewport that is not the one it was written for:
+            // responsive rules land on the wrong side, full-height sections
+            // stop reaching the bottom of the screen, and wide rows spill off
+            // the edge. Both of these together are what a browser does.
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = true
             // How the page knows it is inside the app, and so whether to offer
             // the recorder at all — a browser cannot record with the screen
             // off, so the entry would be a dead button anywhere else.
@@ -178,6 +187,19 @@ fun WebScreen(visible: Boolean, onRecordRequested: () -> Unit, modifier: Modifie
             }
 
             webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+                    // A page failing inside a shell has no devtools and no
+                    // address bar; without this, "the screen went blank" is all
+                    // anyone can report. Warnings and errors only — the SPA is
+                    // chatty at info level.
+                    if (message.messageLevel() in
+                        setOf(ConsoleMessage.MessageLevel.ERROR, ConsoleMessage.MessageLevel.WARNING)
+                    ) {
+                        Log.w(TAG, "web: ${message.message()} (${message.sourceId()}:${message.lineNumber()})")
+                    }
+                    return true
+                }
+
                 override fun onShowFileChooser(
                     view: WebView,
                     callback: ValueCallback<Array<Uri>>,

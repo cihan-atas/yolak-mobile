@@ -48,6 +48,7 @@ object ServerSettings {
     private const val KEY_API_KEY = "api_key"
     private const val KEY_USERNAME = "username"
     private const val KEY_WEB_COOKIE = "web_refresh_cookie"
+    private const val KEY_WEB_COOKIE_PLANTED = "web_refresh_cookie_planted"
 
     /**
      * The server this app is for.
@@ -107,6 +108,27 @@ object ServerSettings {
      */
     fun webRefreshCookie(context: Context): String? =
         prefs(context).getString(KEY_WEB_COOKIE, null)?.takeIf { it.isNotBlank() }
+
+    /**
+     * Whether the captured cookie has already been handed to the web view.
+     *
+     * It may only be handed over once — see `WebSession.install` for what
+     * re-planting a spent refresh token does to a working session.
+     *
+     * @param context Any context.
+     * @return True once it has been planted.
+     */
+    fun webCookiePlanted(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_WEB_COOKIE_PLANTED, false)
+
+    /**
+     * Records that the cookie has been planted.
+     *
+     * @param context Any context.
+     */
+    fun markWebCookiePlanted(context: Context) {
+        prefs(context).edit().putBoolean(KEY_WEB_COOKIE_PLANTED, true).apply()
+    }
 
     /**
      * Signs out, forgetting the key and the web session.

@@ -18,12 +18,25 @@ import app.yolaq.mobile.net.ServerSettings
 object WebSession {
 
     /**
-     * Installs the captured session cookie for the configured server.
+     * Installs the captured session cookie — once, and only once.
+     *
+     * The server rotates the refresh token on every use: the cookie planted
+     * here is spent the moment the page bootstraps, and the web view is handed
+     * a fresh one in its place. Planting the stored value again on a later
+     * launch therefore *overwrites a valid session with a spent one*, and the
+     * user is thrown back to the login screen having done nothing wrong.
+     *
+     * So this seeds the very first load after signing in, and after that the
+     * web view's own cookie jar — which persists across launches — is the one
+     * source of truth.
      *
      * @param context Any context.
      */
     fun install(context: Context) {
         val config = ServerSettings.load(context) ?: return
+        if (ServerSettings.webCookiePlanted(context)) {
+            return
+        }
         val cookie = ServerSettings.webRefreshCookie(context) ?: return
 
         CookieManager.getInstance().apply {
@@ -33,6 +46,7 @@ object WebSession {
             setCookie(config.baseUrl, cookie)
             flush()
         }
+        ServerSettings.markWebCookiePlanted(context)
     }
 
     /**
