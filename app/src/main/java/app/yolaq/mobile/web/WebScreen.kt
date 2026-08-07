@@ -36,14 +36,29 @@ import app.yolaq.mobile.net.ServerSettings
  * carrying every feature twice. What a browser genuinely cannot do — record
  * GPS with the screen off — is the native part, and this is everything else.
  *
+ * Stays in the composition even while the record tab is shown — leaving would
+ * destroy the WebView and reload the page on every tab switch. But a WebView
+ * is a platform view: it is a real child of the window, drawn above Compose
+ * content, and no Compose-side trick (zero size, alpha, z-order) reliably
+ * hides it. The only switch that works is the view's own visibility, hence
+ * [visible] rather than conditional composition.
+ *
+ * @param visible Whether this tab is the active one.
  * @param modifier Layout modifier.
  */
 @Composable
-fun WebScreen(modifier: Modifier = Modifier) {
+fun WebScreen(visible: Boolean, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val config = remember { ServerSettings.load(context) }
+    // Read on every composition, not remembered: the user may configure the
+    // server while this tab is already alive, and a cached null would leave
+    // the tab stuck on "no server" until the app is killed. A prefs read per
+    // recomposition is nothing, and recompositions here are tab switches.
+    val config = ServerSettings.load(context)
 
     if (config == null) {
+        if (!visible) {
+            return
+        }
         // Nowhere to go yet. Saying so beats a blank page or a DNS error.
         Column(
             modifier = modifier.fillMaxSize().padding(24.dp),
@@ -69,7 +84,10 @@ fun WebScreen(modifier: Modifier = Modifier) {
     // the only way out of the app is the home button.
     var canGoBack by remember { mutableStateOf(false) }
 
-    val webView = remember {
+    // Keyed on the config: pointing the app at a different server must
+    // rebuild the page, but ordinary recompositions keep it — and with it the
+    // session and scroll position.
+    val webView = remember(config) {
         WebView(context).apply {
             @SuppressLint("SetJavaScriptEnabled")
             // The web app is a Vue SPA: without scripting there is no page at
@@ -108,11 +126,18 @@ fun WebScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    // Back walks the web history first; once there is none left the handler
-    // stands down and back means what it usually does.
-    BackHandler(enabled = canGoBack) {
+    // Back walks the web history first — but only while this tab is the one
+    // on screen; a hidden tab must not swallow the back button.
+    BackHandler(enabled = visible && canGoBack) {
         webView.goBack()
     }
 
-    AndroidView(modifier = modifier.fillMaxSize(), factory = { webView })
+    AndroidView(
+        modifier = modifier.fillMaxSize(),
+        factory = { webView },
+        update = { view ->
+            // The one hiding mechanism a platform view respects.
+            view.visibility = if (visible) android.view.View.VISIBLE else android.view.View.GONE
+        },
+    )
 }

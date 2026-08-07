@@ -40,7 +40,9 @@
     <string name="sport_running">Koşu</string>
     <string name="sport_walking">Yürüyüş</string>
     <string name="sport_cycling">Bisiklet</string>
-    <string name="sport_hiking">Doğa yürüyüşü</string>
+    <!-- Kept short: four chips share one row, and "Doğa yürüyüşü" wraps to
+         three lines on a phone-width screen. -->
+    <string name="sport_hiking">Doğa</string>
 
     <!-- Uploading -->
     <string name="activity_name">%1$s · %2$s</string>

@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -53,6 +52,7 @@ import app.yolaq.mobile.sync.RecordingFinisher
 import app.yolaq.mobile.sync.Storage
 import app.yolaq.mobile.sync.UploadWorker
 import app.yolaq.mobile.ui.TrackCanvas
+import app.yolaq.mobile.ui.YolakTheme
 import app.yolaq.mobile.web.WebScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -81,7 +81,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme {
+            YolakTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     YolakApp()
                 }
@@ -125,16 +125,16 @@ private fun YolakApp() {
         },
     ) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
-            // Kept in the tree while hidden: rebuilding the web view on every
-            // tab switch would reload the page and lose the user's place, and
-            // rebuilding the recording screen mid-outing would restart its
-            // clock ticker for no reason.
-            Box(modifier = if (tab == Tab.RECORD) Modifier.fillMaxSize() else Modifier.size(0.dp)) {
+            // The record screen is cheap to recompose (its state lives in
+            // RecordingRepository), so it simply leaves when not shown.
+            if (tab == Tab.RECORD) {
                 RecordScreen()
             }
-            Box(modifier = if (tab == Tab.WEB) Modifier.fillMaxSize() else Modifier.size(0.dp)) {
-                WebScreen()
-            }
+            // The web screen stays composed so the WebView — and the page the
+            // user was on — survives tab switches. It hides itself via the
+            // view's own visibility; see WebScreen for why nothing gentler
+            // works on a platform view.
+            WebScreen(visible = tab == Tab.WEB)
         }
     }
 
