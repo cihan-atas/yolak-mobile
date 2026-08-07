@@ -16,11 +16,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -33,11 +37,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
+import app.yolaq.mobile.net.ServerSettings
 import app.yolaq.mobile.recording.RecordingRepository
 import app.yolaq.mobile.recording.RecordingService
 import app.yolaq.mobile.recording.RecordingState
 import app.yolaq.mobile.recording.RecordingStatus
+import app.yolaq.mobile.recording.SportType
+import app.yolaq.mobile.sync.RecordingFinisher
+import app.yolaq.mobile.sync.Storage
+import app.yolaq.mobile.sync.UploadWorker
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /**
@@ -48,6 +61,18 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // A journal left behind means the last process died mid-outing. Doing
+        // this on every launch rather than only after a detected crash: there
+        // is no reliable crash signal, and the leftover file is the signal.
+        // Off the main thread — it reads a file and may write a GPX.
+        lifecycleScope.launch(Dispatchers.IO) {
+            RecordingFinisher.recoverInterrupted(this@MainActivity)
+            // Anything stranded by a previous failure gets another chance the
+            // moment the app is opened, without waiting for the next outing.
+            UploadWorker.schedule(this@MainActivity)
+        }
+
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -81,13 +106,20 @@ private fun RecordScreen() {
         )
     }
 
+    var sport by remember { mutableStateOf(SportType.DEFAULT) }
+    var showSettings by remember { mutableStateOf(false) }
+
     val requestPermissions = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { granted ->
         hasPermission = granted[Manifest.permission.ACCESS_FINE_LOCATION] == true
         if (hasPermission) {
-            RecordingService.send(context, RecordingService.ACTION_START)
+            RecordingService.send(context, RecordingService.ACTION_START, sport)
         }
+    }
+
+    if (showSettings) {
+        ServerSettingsDialog(onDismiss = { showSettings = false })
     }
 
     Column(
@@ -146,17 +178,36 @@ private fun RecordScreen() {
                 }
             }
 
-            RecordingStatus.IDLE -> Button(
-                onClick = {
-                    if (hasPermission) {
-                        RecordingService.send(context, RecordingService.ACTION_START)
-                    } else {
-                        requestPermissions.launch(requiredPermissions())
+            // The sport is chosen before starting rather than corrected on the
+            // web afterwards: it travels in the GPX, and an activity that
+            // arrives as a generic workout drops out of the sport filters on
+            // challenges and segments.
+            RecordingStatus.IDLE -> Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    SportType.entries.forEach { option ->
+                        FilterChip(
+                            selected = option == sport,
+                            onClick = { sport = option },
+                            label = { Text(context.getString(option.labelRes)) },
+                        )
                     }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(stringResourceCompat(context, R.string.record_start))
+                }
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = {
+                        if (hasPermission) {
+                            RecordingService.send(context, RecordingService.ACTION_START, sport)
+                        } else {
+                            requestPermissions.launch(requiredPermissions())
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResourceCompat(context, R.string.record_start))
+                }
             }
 
             RecordingStatus.RECORDING -> Row(
@@ -203,7 +254,108 @@ private fun RecordScreen() {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+
+        Spacer(Modifier.height(24.dp))
+        PendingUploads()
+
+        TextButton(onClick = { showSettings = true }) {
+            Text(stringResourceCompat(context, R.string.settings_open))
+        }
     }
+}
+
+/**
+ * How many finished recordings are still waiting to reach the server.
+ *
+ * Shown because a silent queue is indistinguishable from a lost outing: someone
+ * who finishes a run in a dead spot needs to see that the track exists and is
+ * waiting, not wonder whether it was ever saved.
+ */
+@Composable
+private fun PendingUploads() {
+    val context = LocalContext.current
+    var count by remember { mutableStateOf(0) }
+
+    // Polled rather than observed: the queue changes from a background worker
+    // in another process lifetime, and a few seconds of staleness on a status
+    // line is not worth a broadcast to keep in sync.
+    LaunchedEffect(Unit) {
+        while (true) {
+            count = withContext(Dispatchers.IO) { Storage.queue(context).pending().size }
+            delay(5_000)
+        }
+    }
+
+    if (count > 0) {
+        Text(
+            text = context.getString(R.string.upload_pending, count),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+/**
+ * Server address and API key.
+ *
+ * A key rather than a username and password: the uploader runs from a
+ * background worker with no screen to log in on, and the server already issues
+ * keys scoped to `activities:upload` for exactly this. A real login arrives
+ * with the WebView shell.
+ *
+ * @param onDismiss Closes the dialog.
+ */
+@Composable
+private fun ServerSettingsDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val existing = remember { ServerSettings.load(context) }
+    var baseUrl by remember { mutableStateOf(existing?.baseUrl ?: "") }
+    var apiKey by remember { mutableStateOf(existing?.apiKey ?: "") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(context.getString(R.string.settings_title)) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = baseUrl,
+                    onValueChange = { baseUrl = it },
+                    label = { Text(context.getString(R.string.settings_server)) },
+                    placeholder = { Text("yolaq.app") },
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it },
+                    label = { Text(context.getString(R.string.settings_api_key)) },
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = context.getString(R.string.settings_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    ServerSettings.save(context, baseUrl, apiKey)
+                    // Whatever was stranded for want of a server can go now.
+                    UploadWorker.schedule(context)
+                    onDismiss()
+                },
+            ) {
+                Text(context.getString(R.string.settings_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(context.getString(R.string.record_cancel))
+            }
+        },
+    )
 }
 
 /**

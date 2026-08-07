@@ -19,6 +19,15 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import app.yolaq.mobile.MainActivity
 import app.yolaq.mobile.R
+import app.yolaq.mobile.live.LiveBroadcaster
+import app.yolaq.mobile.net.ServerSettings
+import app.yolaq.mobile.sync.RecordingFinisher
+import app.yolaq.mobile.sync.Storage
+import app.yolaq.mobile.sync.TrackJournal
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 /**
  * Records GPS while the app is in the background or the screen is off.
@@ -37,17 +46,32 @@ class RecordingService : Service() {
 
     private lateinit var locationManager: LocationManager
 
+    private lateinit var journal: TrackJournal
+
+    /**
+     * Outlives individual commands but dies with the service, which is exactly
+     * the lifetime broadcasting should have.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Null when no server is configured, or once the server has refused. */
+    private var broadcaster: LiveBroadcaster? = null
+
+    /** What is being recorded; needed at the end, to write the GPX. */
+    private var sport: SportType = SportType.DEFAULT
+
     private val listener = LocationListener { location -> onFix(location) }
 
     override fun onCreate() {
         super.onCreate()
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        journal = Storage.journal(this)
         createChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startRecording()
+            ACTION_START -> startRecording(SportType.fromName(intent.getStringExtra(EXTRA_SPORT)))
             ACTION_PAUSE -> {
                 RecordingRepository.pause()
                 updateNotification()
@@ -76,8 +100,14 @@ class RecordingService : Service() {
                 setOf(RecordingStatus.RECORDING, RecordingStatus.ACQUIRING)
             ) {
                 Log.i(TAG, "Servis yeniden başlatıldı, kayıt sürdürülüyor")
+                startBroadcasting()
                 resumeLocationUpdates()
             } else {
+                // The whole process was killed, not just the service: the
+                // in-memory recording is gone, but the journal survived it.
+                // Bank what was recorded rather than resuming into a state
+                // whose distance and clock no longer exist.
+                RecordingFinisher.recoverInterrupted(this)
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -91,11 +121,16 @@ class RecordingService : Service() {
 
     override fun onDestroy() {
         runCatching { locationManager.removeUpdates(listener) }
+        scope.cancel()
         super.onDestroy()
     }
 
-    /** Starts location updates and raises the ongoing notification. */
-    private fun startRecording() {
+    /**
+     * Starts location updates and raises the ongoing notification.
+     *
+     * @param sport What the athlete is about to do.
+     */
+    private fun startRecording(sport: SportType) {
         if (!hasLocationPermission()) {
             // Nothing useful to do without permission; the UI is responsible
             // for asking before it starts us.
@@ -104,8 +139,29 @@ class RecordingService : Service() {
             return
         }
 
+        this.sport = sport
+        journal.begin(sport)
+        startBroadcasting()
         RecordingRepository.start()
         resumeLocationUpdates()
+    }
+
+    /**
+     * Begins streaming to the server, if one is configured.
+     *
+     * An unconfigured app still records: the recording is the point, and live
+     * viewing is something the athlete may never have set up. Refusing to start
+     * without a server would make the recorder useless to someone who just
+     * wants a track.
+     */
+    private fun startBroadcasting() {
+        val config = ServerSettings.load(this)
+        if (config == null) {
+            Log.i(TAG, "Sunucu ayarlı değil, canlı yayın yapılmayacak")
+            broadcaster = null
+            return
+        }
+        broadcaster = LiveBroadcaster(config, scope).apply { start() }
     }
 
     /**
@@ -140,6 +196,9 @@ class RecordingService : Service() {
      */
     private fun stopRecording() {
         runCatching { locationManager.removeUpdates(listener) }
+        broadcaster?.stop()
+        broadcaster = null
+
         val finished = RecordingRepository.stop()
         Log.i(
             TAG,
@@ -149,6 +208,12 @@ class RecordingService : Service() {
                 finished.elapsedMillis() / 1000,
             ),
         )
+
+        // Queue before tearing anything down, and only clear the journal once
+        // the track is safely written somewhere else.
+        RecordingFinisher.queue(this, finished.points, sport)
+        journal.clear()
+
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -168,6 +233,13 @@ class RecordingService : Service() {
             recordedAt = location.time,
         )
         val accepted = RecordingRepository.offer(point)
+        if (accepted) {
+            // Write before broadcasting: the journal is what makes the outing
+            // survivable, and it must not wait behind a network call.
+            runCatching { journal.append(point) }
+                .onFailure { error -> Log.e(TAG, "Nokta diske yazılamadı", error) }
+            broadcaster?.offer(point)
+        }
         // While acquiring, a rejected fix still changes what the notification
         // should say — it carries the accuracy the user is waiting on.
         if (accepted || RecordingRepository.state.value.status == RecordingStatus.ACQUIRING) {
@@ -251,6 +323,9 @@ class RecordingService : Service() {
         private const val MIN_INTERVAL_MS = 1_000L
         private const val MIN_DISTANCE_M = 1f
 
+        /** Intent extra carrying the [SportType] name on [ACTION_START]. */
+        const val EXTRA_SPORT = "sport"
+
         const val ACTION_START = "app.yolaq.mobile.START"
         const val ACTION_START_ANYWAY = "app.yolaq.mobile.START_ANYWAY"
         const val ACTION_PAUSE = "app.yolaq.mobile.PAUSE"
@@ -262,9 +337,11 @@ class RecordingService : Service() {
          *
          * @param context Any context.
          * @param action One of the `ACTION_*` constants.
+         * @param sport The sport to record; only read on [ACTION_START].
          */
-        fun send(context: Context, action: String) {
+        fun send(context: Context, action: String, sport: SportType? = null) {
             val intent = Intent(context, RecordingService::class.java).setAction(action)
+            sport?.let { intent.putExtra(EXTRA_SPORT, it.name) }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

@@ -47,6 +47,9 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    // Uploads outlive the app: WorkManager is what survives the process
+    // being killed and waits for a network the phone does not have yet.
+    implementation(libs.androidx.work.runtime.ktx)
 
     testImplementation(libs.junit)
 }

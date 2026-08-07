@@ -35,4 +35,23 @@
         başlamak, kaydın sahte mesafe biriktirmesini engeller.</string>
     <string name="record_start_anyway">Yine de başlat</string>
     <string name="record_cancel">Vazgeç</string>
+
+    <!-- Sports -->
+    <string name="sport_running">Koşu</string>
+    <string name="sport_walking">Yürüyüş</string>
+    <string name="sport_cycling">Bisiklet</string>
+    <string name="sport_hiking">Doğa yürüyüşü</string>
+
+    <!-- Uploading -->
+    <string name="activity_name">%1$s · %2$s</string>
+    <string name="upload_pending">%1$d kayıt yüklenmeyi bekliyor</string>
+
+    <!-- Server settings -->
+    <string name="settings_open">Sunucu ayarları</string>
+    <string name="settings_title">Sunucu</string>
+    <string name="settings_server">Adres</string>
+    <string name="settings_api_key">API anahtarı</string>
+    <string name="settings_hint">Anahtarı yolak\'ta Ayarlar → Entegrasyonlar bölümünden,
+        activities:upload yetkisiyle oluştur.</string>
+    <string name="settings_save">Kaydet</string>
 </resources>
