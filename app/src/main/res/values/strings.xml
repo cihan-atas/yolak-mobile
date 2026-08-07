@@ -68,7 +68,6 @@
     <string name="route_pick_title">Takip edilecek rota</string>
     <string name="route_pick_empty">Henüz rota yok. Web arayüzünden çizebilirsin.</string>
     <string name="route_pick_none">Rotasız kaydet</string>
-    <string name="map_recenter">Konumuma dön</string>
     <string name="route_choose">Rota seç</string>
     <string name="route_change">Rotayı değiştir</string>
     <string name="route_following">%1$s takip ediliyor</string>

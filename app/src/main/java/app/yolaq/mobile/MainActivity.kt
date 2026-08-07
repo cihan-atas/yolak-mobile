@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 
@@ -74,6 +75,22 @@ import java.util.Locale
  * thing written natively is what a browser cannot do.
  */
 class MainActivity : ComponentActivity() {
+
+    /**
+     * Writes the web view's cookies to disk before the app can be killed.
+     *
+     * The session cookie rotates on every use: each refresh mints a new one
+     * and the server treats a *replayed* old one as theft, cancelling every
+     * session. Android keeps new cookies in memory until something flushes
+     * them, so a process killed after a rotation came back holding the
+     * previous cookie — and got the account signed out for reuse. That is
+     * what "the session drops far too quickly" was.
+     */
+    override fun onPause() {
+        super.onPause()
+        android.webkit.CookieManager.getInstance().flush()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -309,7 +326,7 @@ private fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
                 state = state,
                 routeName = followed?.name,
                 offRouteMeters = offRoute,
-                modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(12.dp),
+                modifier = Modifier.align(Alignment.TopStart).padding(12.dp).widthIn(max = 250.dp),
             )
 
             Column(

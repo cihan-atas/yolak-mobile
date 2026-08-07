@@ -186,6 +186,14 @@ fun WebScreen(
                     }
                 }
 
+                override fun onPageFinished(view: WebView, url: String?) {
+                    super.onPageFinished(view, url)
+                    // A page load is where the session cookie is most likely
+                    // to have just rotated; getting it on disk now is what
+                    // keeps the next launch signed in.
+                    android.webkit.CookieManager.getInstance().flush()
+                }
+
                 override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                     super.doUpdateVisitedHistory(view, url, isReload)
                     // Fires on SPA route changes too, not just page loads,
