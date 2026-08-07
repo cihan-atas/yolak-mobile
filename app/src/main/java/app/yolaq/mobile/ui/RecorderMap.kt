@@ -142,7 +142,7 @@ fun RecorderMap(
         // way to find yourself again is to guess. Bottom-right, clear of the
         // numbers above and the controls below.
         FilledTonalButton(
-            onClick = { webView.call("recenter()") },
+            onClick = { webView.call("centerOnMe()") },
             modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
         ) {
             Text(LocalContext.current.getString(R.string.map_recenter))
