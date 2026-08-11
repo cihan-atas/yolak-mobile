@@ -917,6 +917,26 @@ private fun StatsOverlay(
                 )
             }
 
+            // Outranks everything below, including the route being followed:
+            // when nothing is being recorded at all, which route you are on is
+            // not the news. This is the only line here that reports a
+            // recording in trouble rather than a recording in progress.
+            if (state.strandedWithoutFix(now)) {
+                Text(
+                    text = stringResourceCompat(context, R.string.record_stranded_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = stringResourceCompat(context, R.string.record_stranded_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                return@Column
+            }
+
             when {
                 offRouteMeters != null -> Text(
                     text = context.getString(R.string.route_off, offRouteMeters),

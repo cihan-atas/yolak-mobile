@@ -28,6 +28,8 @@
     <string name="record_weak_signal">Zayıf GPS sinyali (±%1$.0f m) — açık alana çık</string>
     <string name="record_waiting">GPS bekleniyor…</string>
     <string name="record_awaiting_satellites">Konum yaklaşık — uydu sinyali gelince mesafe sayılmaya başlar</string>
+    <string name="record_stranded_title">Hâlâ uydu sinyali yok</string>
+    <string name="record_stranded_body">Bu kayda henüz tek bir nokta bile girmedi; şimdi bitirirsen tur kaydedilemez. Açık alana çık — bina içinde uydu sinyali çoğu zaman hiç gelmez.</string>
     <string name="record_points_count">%1$d nokta · ±%2$.0f m</string>
     <string name="record_location_off">Telefonun konum servisi kapalı — kayıt hiçbir nokta alamaz.</string>
     <string name="record_location_open">Konum ayarlarını aç</string>

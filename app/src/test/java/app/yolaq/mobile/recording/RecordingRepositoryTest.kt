@@ -226,6 +226,52 @@ class RecordingRepositoryTest {
     }
 
     @Test
+    fun `overriding the wait still says the distance is not counting`() {
+        RecordingRepository.start(startTime)
+        RecordingRepository.startAnyway(startTime + ACQUIRE_OVERRIDE_AFTER_MS)
+
+        // Cihazda bulundu: bu yoldan başlayan kayıt dakikalarca sıradan
+        // görünüp hiçbir şey saymıyor ve hiçbir şey söylemiyordu; sonunda
+        // "GPS noktası alınamadı" çıkıyordu. Bayrak ekranın nedeni açıkladığı
+        // tek yer.
+        assertTrue(
+            "atlayarak başlayan kayıt uydu beklediğini söylemeli",
+            RecordingRepository.state.value.awaitingSatellites,
+        )
+    }
+
+    @Test
+    fun `a recording with no points at all eventually warns instead of describing`() {
+        RecordingRepository.start(startTime)
+        RecordingRepository.startAnyway(startTime)
+        val state = RecordingRepository.state.value
+
+        assertTrue(
+            "ilk saniyelerde beklemek normaldir, uyarı olmamalı",
+            !state.strandedWithoutFix(startTime + 10_000),
+        )
+        assertTrue(
+            "uzun süre tek nokta bile gelmediyse uyarmalı",
+            state.strandedWithoutFix(startTime + NO_FIX_ESCALATE_AFTER_MS),
+        )
+    }
+
+    @Test
+    fun `a recording that has points never warns however long it runs`() {
+        startRecording()
+
+        // Çapası olan kayıt kaydediyor demektir; sporcu durakta beklerken
+        // saatlerce yeni nokta gelmemesi hata değil.
+        assertTrue(
+            RecordingRepository.state.value.points.isNotEmpty(),
+        )
+        assertTrue(
+            "çapası olan kayıt uyarı vermemeli",
+            !RecordingRepository.state.value.strandedWithoutFix(startTime + 10 * NO_FIX_ESCALATE_AFTER_MS),
+        )
+    }
+
+    @Test
     fun `a wild reported speed does not move the display`() {
         startRecording()
         repeat(5) { second ->

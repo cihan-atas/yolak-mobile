@@ -220,6 +220,14 @@ object RecordingRepository {
             status = RecordingStatus.RECORDING,
             stretchStartedAt = now,
             acquiringSince = null,
+            // This route into RECORDING is, by definition, one taken without a
+            // usable fix — that is the whole reason the button exists. The flag
+            // is what the screen reads to explain why the distance is not
+            // moving; leaving it false let a recording run for minutes looking
+            // ordinary, counting nothing, and saying nothing, until "no GPS
+            // points" at the end. offerApproximate sets it for the same
+            // situation reached the other way.
+            awaitingSatellites = true,
         )
     }
 

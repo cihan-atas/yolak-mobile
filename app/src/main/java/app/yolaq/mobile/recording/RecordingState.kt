@@ -27,6 +27,17 @@ enum class RecordingStatus {
 }
 
 /**
+ * How long a recording may go without a single accepted point before the
+ * screen stops describing and starts warning.
+ *
+ * Long enough that stepping out of a doorway or waiting out a cold start does
+ * not raise an alarm; short enough that the athlete learns the outing is not
+ * being recorded while it is still a two-minute walk to fix it, rather than
+ * after an hour.
+ */
+const val NO_FIX_ESCALATE_AFTER_MS = 90_000L
+
+/**
  * Everything the UI needs to draw the recording screen.
  *
  * Kept as one immutable snapshot so the screen renders from a single value and
@@ -119,4 +130,31 @@ data class RecordingState(
     /** Average speed in m/s over the moving time, or null before it means anything. */
     val averageSpeed: Double?
         get() = if (movingMillis > 0) distanceMeters / (movingMillis / 1000.0) else null
+
+    /**
+     * Whether the recording has been running this long without a single
+     * accepted point.
+     *
+     * Waiting for satellites is a normal opening state, and the quiet banner
+     * says so. Past a certain point it stops being a state and becomes a
+     * verdict: nothing has been recorded, nothing will be unless something
+     * changes, and finishing here loses the outing. The screen needs to say
+     * that while there is still time to walk outside — not at the end, which
+     * is where it used to say it.
+     *
+     * Measured from the start of the recording rather than from the last fix,
+     * because indoors there is often no last fix at all: the satellite
+     * receiver produces nothing, so nothing arrives to update the state and a
+     * timer driven by fixes would never fire.
+     *
+     * @param now Epoch millis to measure against.
+     * @return True when the recording is stranded without a track.
+     */
+    fun strandedWithoutFix(now: Long = System.currentTimeMillis()): Boolean {
+        if (status != RecordingStatus.RECORDING || points.isNotEmpty()) {
+            return false
+        }
+        val since = stretchStartedAt ?: return false
+        return now - since >= NO_FIX_ESCALATE_AFTER_MS
+    }
 }
