@@ -9,6 +9,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -62,6 +66,58 @@ class RecordingService : Service() {
 
     private val listener = LocationListener { location -> onFix(location) }
 
+    /** Reads the accelerometer; see [MotionWindow] for why this exists. */
+    private val motionWindow = MotionWindow()
+
+    private var sensorManager: SensorManager? = null
+
+    /**
+     * Feeds acceleration into the window and publishes the verdict.
+     *
+     * Sampled at the "normal" rate rather than the fastest available: the
+     * question is whether the phone has been carried in the last few seconds,
+     * and answering it fifty times a second would cost battery for a number
+     * that changes on the scale of a footstep.
+     */
+    private val motionListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent) {
+            motionWindow.add(
+                MotionWindow.magnitude(event.values[0], event.values[1], event.values[2]),
+                System.currentTimeMillis(),
+            )
+            RecordingRepository.setDeviceMoving(motionWindow.isMoving())
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+    }
+
+    /**
+     * Starts watching the accelerometer.
+     *
+     * A phone with no accelerometer, or one whose sensor refuses to register,
+     * simply leaves the recorder as it was before this existed: the repository
+     * defaults to "moving", so the GPS filter carries on alone rather than the
+     * recording measuring nothing.
+     */
+    private fun startMotionUpdates() {
+        motionWindow.reset()
+        RecordingRepository.setDeviceMoving(true)
+        val manager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        val accelerometer = manager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        if (manager == null || accelerometer == null) {
+            Log.w(TAG, "İvmeölçer yok, hareket denetimi devre dışı")
+            return
+        }
+        sensorManager = manager
+        manager.registerListener(motionListener, accelerometer, SensorManager.SENSOR_DELAY_NORMAL)
+    }
+
+    /** Stops watching the accelerometer. */
+    private fun stopMotionUpdates() {
+        runCatching { sensorManager?.unregisterListener(motionListener) }
+        sensorManager = null
+    }
+
     override fun onCreate() {
         super.onCreate()
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -83,6 +139,17 @@ class RecordingService : Service() {
 
             ACTION_RESUME -> {
                 RecordingRepository.resume()
+                updateNotification()
+            }
+
+            // Back from the finish screen. The recording is restored paused,
+            // so this has to raise the notification and subscribe again — the
+            // service was torn down when "Bitir" was pressed, and a service
+            // started without startForeground is killed within seconds.
+            ACTION_REOPEN -> {
+                sport = SportType.fromName(intent?.getStringExtra(EXTRA_SPORT))
+                startBroadcasting()
+                resumeLocationUpdates()
                 updateNotification()
             }
 
@@ -111,7 +178,7 @@ class RecordingService : Service() {
                 // in-memory recording is gone, but the journal survived it.
                 // Bank what was recorded rather than resuming into a state
                 // whose distance and clock no longer exist.
-                RecordingFinisher.recoverInterrupted(this)
+                RecordingFinisher.restore(this)
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -125,6 +192,7 @@ class RecordingService : Service() {
 
     override fun onDestroy() {
         runCatching { locationManager.removeUpdates(listener) }
+        stopMotionUpdates()
         scope.cancel()
         super.onDestroy()
     }
@@ -177,6 +245,7 @@ class RecordingService : Service() {
      */
     private fun resumeLocationUpdates() {
         startForeground(NOTIFICATION_ID, buildNotification())
+        startMotionUpdates()
         runCatching {
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
@@ -187,6 +256,54 @@ class RecordingService : Service() {
         }.onFailure { error ->
             Log.e(TAG, "Konum güncellemeleri başlatılamadı", error)
         }
+
+        // Wi-Fi and cell towers as well as satellites. Indoors the satellite
+        // receiver reports *nothing at all* — not a poor fix, silence — which
+        // is why the wait screen used to sit there with no accuracy to show
+        // and no way past it. This provider answers in seconds under a roof.
+        // It is the same thing the fused provider does for other apps, minus
+        // the Play Services dependency this app deliberately avoids.
+        runCatching {
+            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    APPROXIMATE_INTERVAL_MS,
+                    0f,
+                    listener,
+                )
+            }
+        }.onFailure { error ->
+            Log.w(TAG, "Yaklaşık konum sağlayıcısı açılamadı", error)
+        }
+
+        seedApproximatePosition()
+    }
+
+    /**
+     * Hands over the last position the platform already knew about.
+     *
+     * Both providers take time to answer, and until one does the screen has
+     * nothing to draw. The phone almost always has a recent position cached
+     * from some other app; using it means the map opens on the athlete rather
+     * than on an empty square, at the cost of nothing — it is offered as an
+     * approximate position, so it can never reach the track.
+     */
+    private fun seedApproximatePosition() {
+        if (!hasLocationPermission()) {
+            return
+        }
+        val cached = runCatching {
+            listOfNotNull(
+                locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER),
+                locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER),
+            )
+                // Stale beyond this it is a different outing, possibly a
+                // different city, and worse than showing nothing.
+                .filter { System.currentTimeMillis() - it.time <= MAX_CACHED_FIX_AGE_MS }
+                .minByOrNull { if (it.hasAccuracy()) it.accuracy else Float.MAX_VALUE }
+        }.getOrNull() ?: return
+
+        RecordingRepository.offerApproximate(cached.toTrackPoint())
     }
 
     /**
@@ -216,10 +333,24 @@ class RecordingService : Service() {
             ),
         )
 
-        // Queue before tearing anything down, and only clear the journal once
-        // the track is safely written somewhere else.
-        RecordingFinisher.queue(this, finished.points, sport, reportOutcome = !cancelledBeforeStart)
-        journal.clear()
+        // Handed over for the athlete to keep or throw away rather than
+        // uploaded on the spot. The journal is deliberately left in place: it
+        // is what makes that decision survive the app being killed, and it is
+        // cleared by whichever way the decision goes.
+        RecordingFinisher.hold(
+            context = this,
+            points = finished.points,
+            sport = sport,
+            distanceMeters = finished.distanceMeters,
+            elapsedMillis = finished.elapsedMillis(),
+            reportOutcome = !cancelledBeforeStart,
+            // Pressing "Bitir" is the decision. Everything after it — the
+            // name, the visibility, the photos, and throwing it away — lives
+            // in the activity's own edit form, so the recording goes up and
+            // the screen opens that form instead of asking the same questions
+            // twice in two different places.
+            keepImmediately = true,
+        )
 
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -231,14 +362,19 @@ class RecordingService : Service() {
      * @param location The fix reported by the provider.
      */
     private fun onFix(location: Location) {
-        val point = TrackPoint(
-            latitude = location.latitude,
-            longitude = location.longitude,
-            elevation = if (location.hasAltitude()) location.altitude else null,
-            speed = if (location.hasSpeed()) location.speed.toDouble() else null,
-            accuracy = if (location.hasAccuracy()) location.accuracy else Float.MAX_VALUE,
-            recordedAt = location.time,
-        )
+        val point = location.toTrackPoint()
+
+        // Only satellites are allowed near the track. A Wi-Fi position is
+        // accurate to tens of metres and drifts between access points without
+        // anyone moving; letting one into the distance is how a phone sitting
+        // on a table records a kilometre.
+        if (location.provider != LocationManager.GPS_PROVIDER) {
+            if (RecordingRepository.offerApproximate(point)) {
+                updateNotification()
+            }
+            return
+        }
+
         val accepted = RecordingRepository.offer(point)
         if (accepted) {
             // Write before broadcasting: the journal is what makes the outing
@@ -253,6 +389,20 @@ class RecordingService : Service() {
             updateNotification()
         }
     }
+
+    /**
+     * Converts a platform fix into the app's own point.
+     *
+     * @return The point, with a hopeless accuracy when the fix carried none.
+     */
+    private fun Location.toTrackPoint(): TrackPoint = TrackPoint(
+        latitude = latitude,
+        longitude = longitude,
+        elevation = if (hasAltitude()) altitude else null,
+        speed = if (hasSpeed()) speed.toDouble() else null,
+        accuracy = if (hasAccuracy()) accuracy else Float.MAX_VALUE,
+        recordedAt = time,
+    )
 
     /** Whether the user has granted foreground location access. */
     private fun hasLocationPermission(): Boolean =
@@ -330,6 +480,25 @@ class RecordingService : Service() {
         private const val MIN_INTERVAL_MS = 1_000L
         private const val MIN_DISTANCE_M = 1f
 
+        /**
+         * How often to accept an approximate position.
+         *
+         * Far slower than the satellite stream: these only answer "roughly
+         * where are we" for the map and the start gate, and asking Wi-Fi
+         * scanning to run every second would cost battery for a number that
+         * barely changes.
+         */
+        private const val APPROXIMATE_INTERVAL_MS = 10_000L
+
+        /**
+         * How old a cached position may be and still be worth showing.
+         *
+         * Beyond a few minutes it is likely to be somewhere the athlete no
+         * longer is, and a map centred confidently on the wrong place is
+         * worse than one that admits it is waiting.
+         */
+        private const val MAX_CACHED_FIX_AGE_MS = 5 * 60 * 1000L
+
         /** Intent extra carrying the [SportType] name on [ACTION_START]. */
         const val EXTRA_SPORT = "sport"
 
@@ -338,6 +507,7 @@ class RecordingService : Service() {
         const val ACTION_PAUSE = "app.yolaq.mobile.PAUSE"
         const val ACTION_RESUME = "app.yolaq.mobile.RESUME"
         const val ACTION_STOP = "app.yolaq.mobile.STOP"
+        const val ACTION_REOPEN = "app.yolaq.mobile.REOPEN"
 
         /**
          * Sends a command to the service, starting it if needed.

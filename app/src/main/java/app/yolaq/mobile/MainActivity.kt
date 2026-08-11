@@ -1,8 +1,14 @@
 package app.yolaq.mobile
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Build
+import android.provider.Settings
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -14,6 +20,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,17 +37,20 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import app.yolaq.mobile.net.ServerSettings
 import app.yolaq.mobile.recording.RecordingRepository
@@ -99,7 +109,7 @@ class MainActivity : ComponentActivity() {
         // is no reliable crash signal, and the leftover file is the signal.
         // Off the main thread — it reads a file and may write a GPX.
         lifecycleScope.launch(Dispatchers.IO) {
-            RecordingFinisher.recoverInterrupted(this@MainActivity)
+            RecordingFinisher.restore(this@MainActivity)
             // Anything stranded by a previous failure gets another chance the
             // moment the app is opened, without waiting for the next outing.
             UploadWorker.schedule(this@MainActivity)
@@ -131,6 +141,17 @@ private fun YolakApp() {
     val context = LocalContext.current
     val state by RecordingRepository.state.collectAsState()
     var showRecorder by remember { mutableStateOf(false) }
+    val pendingReview by RecordingFinisher.pendingReview.collectAsState()
+
+    // A recording nobody has decided about is a question the app owes an
+    // answer to, and one it cannot ask from a screen the athlete has to go
+    // looking for. It arrives either from a recording just finished or from a
+    // process that died holding one, and both open the recorder to ask.
+    LaunchedEffect(pendingReview) {
+        if (pendingReview != null) {
+            showRecorder = true
+        }
+    }
     // Handed over by the web half once its view exists; lets the recorder's
     // bottom bar move the page underneath instead of merely closing.
     var navigateWeb by remember { mutableStateOf<((String) -> Unit)?>(null) }
@@ -263,10 +284,81 @@ private fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
         )
     }
 
+    // Whether the phone's own location switch is on. Nothing this app does
+    // works without it — not satellites, not Wi-Fi positioning, not even the
+    // cached last position — and the app used to say nothing at all, leaving
+    // the athlete on "waiting for GPS" and eventually telling them to go
+    // outside to fix a toggle in their own settings.
+    var locationEnabled by remember { mutableStateOf(isLocationEnabled(context)) }
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(received: Context?, intent: Intent?) {
+                locationEnabled = isLocationEnabled(context)
+            }
+        }
+        // The system announces the switch being flipped, so the warning can
+        // clear itself the moment the athlete acts on it rather than making
+        // them come back and look again.
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            IntentFilter(LocationManager.MODE_CHANGED_ACTION),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        onDispose { runCatching { context.unregisterReceiver(receiver) } }
+    }
+
     var sport by remember { mutableStateOf(SportType.DEFAULT) }
     var showRoutePicker by remember { mutableStateOf(false) }
     val followed by FollowedRoute.selected.collectAsState()
     val outcome by RecordingFinisher.lastOutcome.collectAsState()
+    val review by RecordingFinisher.pendingReview.collectAsState()
+    val handover by RecordingFinisher.handover.collectAsState()
+    val scope = rememberCoroutineScope()
+    // Driven by the finisher, not by this screen: pressing "Bitir" now hands
+    // the recording to the uploader from the service, so the screen learns
+    // that a save is in flight rather than being the one to start it.
+    val saving by RecordingFinisher.awaitingUpload.collectAsState()
+    /** Why the kept recording is not open in its edit form, once it is not. */
+    var notDelivered by remember { mutableStateOf<RecordingFinisher.Handover?>(null) }
+
+    // The point of keeping a recording is deciding what it is called, who can
+    // see it and what to hide — and all of that already exists as the web
+    // app's edit form. So the moment the server has made the activity, the app
+    // hands over to it rather than growing a second copy of the same form.
+    // Every other ending is the uploader's own word for what happened, which
+    // is the only way the athlete gets told the truth about it.
+    LaunchedEffect(handover) {
+        val result = handover ?: return@LaunchedEffect
+        RecordingFinisher.clearHandover()
+        if (result is RecordingFinisher.Handover.Uploaded) {
+            onNavigate("/activity/${result.activityId}?edit=1")
+        } else {
+            notDelivered = result
+        }
+    }
+
+    // The uploader normally answers within a second or two. This is for when
+    // it does not answer at all — the run never started, the process holding
+    // it was killed — because a spinner with no end is worse than a wrong
+    // guess, and the guess is at least labelled as one.
+    LaunchedEffect(saving) {
+        if (!saving) {
+            return@LaunchedEffect
+        }
+        delay(HANDOVER_WAIT_MILLIS)
+        if (saving) {
+            RecordingFinisher.clearHandover()
+            notDelivered = RecordingFinisher.Handover.Deferred("timeout")
+        }
+    }
+
+    // Leaving the recorder withdraws the offer: the upload may land tomorrow,
+    // and opening an edit form over whatever the athlete is doing then would
+    // be the app taking over the screen.
+    DisposableEffect(Unit) {
+        onDispose { RecordingFinisher.clearHandover() }
+    }
 
     val offRoute = followed?.points?.takeIf { it.isNotEmpty() }?.let { line ->
         state.points.lastOrNull()?.let { here ->
@@ -307,16 +399,22 @@ private fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
         // postage-stamp map with the numbers stacked underneath answers
         // neither "where am I" nor "how am I doing" at arm's length.
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            // Before the first real fix there is no track to draw, and an
+            // empty map indoors is the thing that reads as "the app is
+            // broken". The approximate position stands in until satellites
+            // arrive — it is a single point, so it centres the map and draws
+            // no line anyone could mistake for a route.
+            val shown = state.points.ifEmpty { listOfNotNull(state.approximatePosition) }
             if (session != null) {
                 RecorderMap(
                     config = session,
-                    points = state.points,
+                    points = shown,
                     route = followed?.points.orEmpty(),
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
                 TrackCanvas(
-                    points = state.points,
+                    points = shown,
                     route = followed?.points.orEmpty(),
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -336,7 +434,72 @@ private fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
                     .padding(12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                outcome?.let { last ->
+                review?.let { pending ->
+                    // Everything else on this screen belongs to a recording
+                    // that is running; while this is up, the only questions
+                    // are keep or discard.
+                    ReviewCard(
+                        review = pending,
+                        onKeep = {
+                            notDelivered = null
+                            // Writes the GPX and clears the journal: disk work
+                            // that has no business on the main thread while
+                            // the card it belongs to is animating away.
+                            scope.launch(Dispatchers.IO) { RecordingFinisher.keep(context) }
+                        },
+                        onDiscard = { RecordingFinisher.discard(context) },
+                        onBack = {
+                            notDelivered = null
+                            // Restored paused, then the service is told to pick
+                            // the recording back up. Order matters: the service
+                            // reads the repository's state to draw its
+                            // notification.
+                            val resumed = RecordingFinisher.reopen(context)
+                            if (resumed != null) {
+                                RecordingRepository.reopen(
+                                    points = resumed.points,
+                                    distanceMeters = resumed.distanceMeters,
+                                    movingMillis = resumed.elapsedMillis,
+                                )
+                                RecordingService.send(
+                                    context,
+                                    RecordingService.ACTION_REOPEN,
+                                    resumed.sport,
+                                )
+                            }
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                if (saving) {
+                    OverlayCard {
+                        Text(
+                            text = stringResourceCompat(context, R.string.review_uploading),
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                notDelivered?.let { result ->
+                    OverlayCard {
+                        Text(
+                            text = handoverMessage(context, result),
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            color = if (result is RecordingFinisher.Handover.Refused) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                outcome?.takeIf { review == null && !saving && notDelivered == null }?.let { last ->
                     OverlayCard {
                         Text(
                             text = when (last) {
@@ -360,27 +523,44 @@ private fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
                     Spacer(Modifier.height(8.dp))
                 }
 
-                if (state.status == RecordingStatus.IDLE) {
-                    OverlayCard {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (state.status == RecordingStatus.IDLE && review == null) {
+                    // Left, and no wider than it has to be: this card used to
+                    // be a full-width slab in the middle of the screen, which
+                    // put the choice of sport over the map at the moment
+                    // someone is looking at where they are about to go. It is
+                    // a setting you touch once, so it gets a corner — and the
+                    // opposite corner from the map's own controls, which now
+                    // sit bottom-right.
+                    OverlayCard(compact = true, modifier = Modifier.align(Alignment.Start)) {
+                        Column {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 SportType.entries.forEach { option ->
                                     FilterChip(
                                         selected = option == sport,
                                         onClick = { sport = option },
-                                        label = { Text(context.getString(option.labelRes)) },
+                                        label = {
+                                            Text(
+                                                text = context.getString(option.labelRes),
+                                                style = MaterialTheme.typography.labelSmall,
+                                            )
+                                        },
                                     )
                                 }
                             }
-                            TextButton(onClick = { showRoutePicker = true }) {
+                            TextButton(
+                                onClick = { showRoutePicker = true },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                modifier = Modifier.height(28.dp),
+                            ) {
                                 Text(
-                                    context.getString(
+                                    text = context.getString(
                                         if (followed == null) {
                                             R.string.route_choose
                                         } else {
                                             R.string.route_change
                                         },
                                     ),
+                                    style = MaterialTheme.typography.labelSmall,
                                 )
                             }
                         }
@@ -388,6 +568,12 @@ private fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
                     Spacer(Modifier.height(8.dp))
                 }
 
+                // Not full width: the map draws its attribution mark in the
+                // bottom-left corner and its controls in the bottom-right, and
+                // a button spanning the screen buried the first of them. The
+                // controls it commands are few and centred, so it loses
+                // nothing by being narrower than the screen.
+                if (review == null) {
                 RecordControls(
                     status = state.status,
                     canOverride = state.canOverrideAcquire(),
@@ -400,9 +586,31 @@ private fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
                         }
                     },
                     onAction = { action -> RecordingService.send(context, action) },
+                    modifier = Modifier.fillMaxWidth(RECORD_CONTROLS_WIDTH_FRACTION),
                 )
+                }
 
-                if (!hasPermission) {
+                // Ranked above everything else the screen might say. A missing
+                // system switch makes every other message a lie: "waiting for
+                // GPS" is waiting for something that cannot arrive.
+                if (!locationEnabled && review == null) {
+                    OverlayCard {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = stringResourceCompat(context, R.string.record_location_off),
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            TextButton(onClick = { openLocationSettings(context) }) {
+                                Text(stringResourceCompat(context, R.string.record_location_open))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                if (!hasPermission && review == null) {
                     Spacer(Modifier.height(8.dp))
                     OverlayCard {
                         Text(
@@ -419,21 +627,225 @@ private fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
 }
 
 /**
+ * Whether the phone will hand out a location at all.
+ *
+ * Separate from the app's own permission: the athlete can have granted
+ * everything and still have the system switch off, in which case every
+ * provider is silent and no amount of waiting helps.
+ *
+ * @param context Any context.
+ * @return True when location services are on.
+ */
+private fun isLocationEnabled(context: Context): Boolean {
+    val manager = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        ?: return false
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        manager.isLocationEnabled
+    } else {
+        manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+            manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+    }
+}
+
+/**
+ * Opens the system's location settings.
+ *
+ * Offered as a button rather than an instruction: "turn on location services"
+ * is three taps away through a menu the athlete is not in, and they are
+ * standing at the trailhead.
+ *
+ * @param context Any context.
+ */
+private fun openLocationSettings(context: Context) {
+    runCatching {
+        context.startActivity(
+            Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }
+}
+
+/**
+ * How much of the screen the record controls take.
+ *
+ * Enough for two buttons side by side with their labels, and no more: the map
+ * puts its attribution in the bottom-left corner and its own controls in the
+ * bottom-right, and a full-width button sat on top of the first.
+ */
+private const val RECORD_CONTROLS_WIDTH_FRACTION = 0.72f
+
+/**
+ * How long the app waits for a saved recording to reach the server.
+ *
+ * Long enough for a slow connection to finish a real outing's GPX, short
+ * enough that someone standing in a dead spot is told so rather than left
+ * watching a spinner.
+ */
+private const val HANDOVER_WAIT_MILLIS = 20_000L
+
+/**
+ * Says what actually became of a kept recording.
+ *
+ * Every one of these used to read "Bağlantı yok", including the cases where
+ * the connection was fine and the recording was not queued at all — a refused
+ * key leaves the file set aside, never to be sent, and telling someone it is
+ * waiting for a network is how an outing is quietly lost.
+ *
+ * @param context Any context, for the strings.
+ * @param result How the upload ended.
+ * @return The line to show.
+ */
+private fun handoverMessage(context: Context, result: RecordingFinisher.Handover): String =
+    when (result) {
+        // Only reached when the answer carried no id to follow; the outing is
+        // on the server either way.
+        is RecordingFinisher.Handover.Saved,
+        is RecordingFinisher.Handover.Uploaded,
+        -> context.getString(R.string.review_saved)
+
+        is RecordingFinisher.Handover.Refused ->
+            context.getString(R.string.review_refused, result.status)
+
+        is RecordingFinisher.Handover.SignedOut ->
+            context.getString(R.string.review_signed_out)
+
+        is RecordingFinisher.Handover.Deferred ->
+            context.getString(R.string.review_queued_offline)
+    }
+
+/**
  * A translucent slab for anything floating over the map.
  *
  * Readable over streets and parks alike without hiding them: the map is the
  * context these numbers belong to, and a solid panel would take it away.
  *
+ * @param modifier Layout modifier — the sport card uses it to sit left while
+ *   the record controls stay centred.
+ * @param compact Tighter padding, for a card that shares the corner with the
+ *   map rather than leading the screen.
  * @param content What sits on the slab.
  */
 @Composable
-private fun OverlayCard(content: @Composable () -> Unit) {
+private fun OverlayCard(
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    content: @Composable () -> Unit,
+) {
     Surface(
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
         shape = MaterialTheme.shapes.large,
         tonalElevation = 3.dp,
+        modifier = modifier,
     ) {
-        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) { content() }
+        Box(
+            modifier = Modifier.padding(
+                horizontal = if (compact) 8.dp else 16.dp,
+                vertical = if (compact) 6.dp else 10.dp,
+            ),
+        ) { content() }
+    }
+}
+
+/**
+ * Renders a duration as hours:minutes:seconds.
+ *
+ * Always three parts, zero-padded, so the numbers do not jump sideways as the
+ * clock passes an hour — the strip is read at a glance while moving.
+ *
+ * @param millis How long, in milliseconds.
+ * @return The formatted clock.
+ */
+private fun formatDuration(millis: Long): String {
+    val totalSeconds = millis / 1000
+    return String.format(
+        Locale.US,
+        "%02d:%02d:%02d",
+        totalSeconds / 3600,
+        (totalSeconds % 3600) / 60,
+        totalSeconds % 60,
+    )
+}
+
+/**
+ * The question a finished recording asks before it goes anywhere.
+ *
+ * Pressing "Bitir" used to publish the outing on the spot. That is the one
+ * moment it is least decided: it may be a false start, it may want a name, it
+ * may be somewhere the athlete would rather not put on a public map. Strava
+ * asks here and so does this — and "Kaydet" then hands straight over to the
+ * activity's own edit form on the web, where the name, the visibility, the
+ * per-metric hiding and the photos already live.
+ *
+ * @param review The recording waiting to be decided about.
+ * @param onKeep Keep it: queue, upload, then open its edit form.
+ * @param onDiscard Throw it away.
+ * @param onBack Neither: put it back and carry on recording.
+ */
+@Composable
+private fun ReviewCard(
+    review: RecordingFinisher.Review,
+    onKeep: () -> Unit,
+    onDiscard: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    // Deleting an outing cannot be undone — the track is gone from the phone
+    // and was never anywhere else — so the second press is the safeguard.
+    var confirmingDiscard by remember { mutableStateOf(false) }
+
+    OverlayCard {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = stringResourceCompat(context, R.string.review_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = context.getString(
+                    R.string.review_summary,
+                    String.format(Locale.US, "%.2f km", review.distanceMeters / 1000.0),
+                    formatDuration(review.elapsedMillis),
+                    review.points.size,
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResourceCompat(
+                    context,
+                    if (confirmingDiscard) R.string.review_discard_confirm else R.string.review_hint,
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+                color = if (confirmingDiscard) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        if (confirmingDiscard) onDiscard() else confirmingDiscard = true
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(stringResourceCompat(context, R.string.review_discard))
+                }
+                Button(onClick = onKeep, modifier = Modifier.weight(1f)) {
+                    Text(stringResourceCompat(context, R.string.review_keep))
+                }
+            }
+
+            // The third answer, and the one a finish screen most often needs:
+            // "Bitir" is frequently pressed by mistake or reconsidered at the
+            // door, and without this the only way back was to record a second
+            // outing and stitch the two together afterwards.
+            TextButton(onClick = onBack) {
+                Text(stringResourceCompat(context, R.string.review_back))
+            }
+        }
     }
 }
 
@@ -518,6 +930,18 @@ private fun StatsOverlay(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
 
+                // Ranked above the weak-signal warning on purpose. Both are
+                // true indoors — the receiver is reporting nothing usable, and
+                // the distance is not counting — but only this one explains
+                // what the recording is actually doing. "Go outside" told an
+                // athlete who had deliberately started indoors to go and fix a
+                // problem the app had already handled.
+                state.awaitingSatellites -> Text(
+                    text = stringResourceCompat(context, R.string.record_awaiting_satellites),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
                 state.weakSignal && state.lastAccuracy != null -> Text(
                     text = context.getString(R.string.record_weak_signal, state.lastAccuracy),
                     style = MaterialTheme.typography.bodySmall,
@@ -552,16 +976,17 @@ private fun RecordControls(
     canOverride: Boolean,
     onStart: () -> Unit,
     onAction: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
 
     when (status) {
-        RecordingStatus.IDLE -> Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) {
+        RecordingStatus.IDLE -> Button(onClick = onStart, modifier = modifier.fillMaxWidth()) {
             Text(stringResourceCompat(context, R.string.record_start))
         }
 
         RecordingStatus.ACQUIRING -> Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             OutlinedButton(
@@ -581,7 +1006,7 @@ private fun RecordControls(
         }
 
         RecordingStatus.RECORDING -> Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             OutlinedButton(
@@ -599,7 +1024,7 @@ private fun RecordControls(
         }
 
         RecordingStatus.PAUSED -> Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Button(
@@ -693,14 +1118,7 @@ private fun Metrics(state: RecordingState) {
     }
 
     val km = state.distanceMeters / 1000.0
-    val totalSeconds = state.elapsedMillis(now) / 1000
-    val duration = String.format(
-        Locale.US,
-        "%02d:%02d:%02d",
-        totalSeconds / 3600,
-        (totalSeconds % 3600) / 60,
-        totalSeconds % 60,
-    )
+    val duration = formatDuration(state.elapsedMillis(now))
     val context = LocalContext.current
     // km/h, not km/s — the value is metres per second times 3.6.
     val speed = state.currentSpeed
@@ -731,6 +1149,12 @@ private fun Metrics(state: RecordingState) {
         // being proven on real outings, "is GPS arriving, and is it good
         // enough?" is the question that decides whether a track exists at all.
         val status = when {
+            // Same ordering as the overlay: while the track has no anchor yet,
+            // "waiting for satellites" is the state, and a weak-signal warning
+            // on top of it is noise about a problem already being described.
+            state.awaitingSatellites ->
+                context.getString(R.string.record_awaiting_satellites)
+
             state.weakSignal && state.lastAccuracy != null ->
                 context.getString(R.string.record_weak_signal, state.lastAccuracy)
 

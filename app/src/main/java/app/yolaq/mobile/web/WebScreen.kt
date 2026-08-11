@@ -6,6 +6,9 @@ import android.net.Uri
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.ValueCallback
+import android.Manifest
+import android.content.pm.PackageManager
+import android.webkit.GeolocationPermissions
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -203,6 +206,25 @@ fun WebScreen(
             }
 
             webChromeClient = object : WebChromeClient() {
+                override fun onGeolocationPermissionsShowPrompt(
+                    origin: String,
+                    callback: GeolocationPermissions.Callback,
+                ) {
+                    // Without this the WebView denies `navigator.geolocation`
+                    // silently — no prompt, no error, the map's "where am I"
+                    // button simply does nothing while the phone's location is
+                    // switched on and the app already holds the permission.
+                    //
+                    // Granted only to our own server, and only when Android has
+                    // actually given the app the permission; the page is ours,
+                    // so a second in-page prompt would be asking the same
+                    // question twice.
+                    val allowed = origin.startsWith(config.baseUrl) &&
+                        context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+                        PackageManager.PERMISSION_GRANTED
+                    callback.invoke(origin, allowed, false)
+                }
+
                 override fun onConsoleMessage(message: ConsoleMessage): Boolean {
                     // A page failing inside a shell has no devtools and no
                     // address bar; without this, "the screen went blank" is all

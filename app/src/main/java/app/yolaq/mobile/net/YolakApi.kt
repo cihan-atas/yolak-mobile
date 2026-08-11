@@ -17,8 +17,14 @@ import java.net.URL
  */
 sealed interface ApiResult {
 
-    /** The server accepted the request. */
-    data object Success : ApiResult
+    /**
+     * The server accepted the request.
+     *
+     * @property body The response, as sent. Carried because the upload
+     *   endpoint answers with the activities it created, and the app needs
+     *   their ids to take the athlete straight to what they just recorded.
+     */
+    data class Success(val body: String) : ApiResult
 
     /**
      * The request failed in a way a later attempt may survive: no network, a
@@ -118,7 +124,7 @@ class YolakApi(private val config: ServerConfig) {
             connection.outputStream.use(writeBody)
 
             when (val status = connection.responseCode) {
-                in 200..299 -> ApiResult.Success
+                in 200..299 -> ApiResult.Success(connection.readBody())
 
                 // 408 and 429 are refusals that a later attempt genuinely may
                 // survive, unlike the rest of the 4xx range.
@@ -137,6 +143,19 @@ class YolakApi(private val config: ServerConfig) {
     }
 
     /**
+     * Reads a successful response.
+     *
+     * Capped like the error reader: the app only ever looks for ids near the
+     * front, and a server answering with something unexpected should not be
+     * able to pull an arbitrary amount of it into memory.
+     *
+     * @return The first characters of the body, or an empty string.
+     */
+    private fun HttpURLConnection.readBody(): String = runCatching {
+        inputStream?.bufferedReader()?.use(BufferedReader::readText)?.take(BODY_CHARS).orEmpty()
+    }.getOrDefault("")
+
+    /**
      * Reads the beginning of an error response.
      *
      * @return The first characters of the body, or an empty string.
@@ -152,5 +171,13 @@ class YolakApi(private val config: ServerConfig) {
 
         /** Enough of a refusal to diagnose it, not enough to fill the log. */
         const val ERROR_BODY_CHARS = 500
+
+        /**
+         * How much of a successful response is read.
+         *
+         * The upload endpoint answers with the created activities; only their
+         * ids are wanted, and they are at the front.
+         */
+        const val BODY_CHARS = 2000
     }
 }

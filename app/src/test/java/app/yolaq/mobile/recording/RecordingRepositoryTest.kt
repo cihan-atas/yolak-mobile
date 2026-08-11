@@ -226,20 +226,60 @@ class RecordingRepositoryTest {
     }
 
     @Test
-    fun `displayed speed is smoothed rather than raw`() {
+    fun `a wild reported speed does not move the display`() {
         startRecording()
-        // A single wild reading must not throw the display: the low-pass filter
-        // should move towards it, not jump to it.
         repeat(5) { second ->
             RecordingRepository.offer(fix(3.0 * (second + 1), second + 1L, speed = 3.0))
         }
         val settled = RecordingRepository.state.value.currentSpeed!!
 
+        // The receiver claims 12 m/s while its own coordinates advance the
+        // usual three metres. The display is measured from the coordinates, so
+        // it must not budge — the velocity field is not consulted at all.
         RecordingRepository.offer(fix(3.0 * 6, 6, speed = 12.0))
         val jolted = RecordingRepository.state.value.currentSpeed!!
 
-        assertTrue("yumuşatma hızı takip etmedi", jolted > settled)
-        assertTrue("ham değere sıçradı, yumuşatma çalışmıyor", jolted < 8.0)
+        assertEquals("bildirilen hız ekranı sürükledi", settled, jolted, 0.05)
+    }
+
+    @Test
+    fun `a steady walk reads as a steady pace`() {
+        // The complaint this window exists for: one unbroken walk that showed
+        // 15, then 37, then 40, then 23 minutes per kilometre. Doppler noise
+        // of ±0.4 m/s around a 1.4 m/s walk, which is what a receiver really
+        // reports, must not reach the display any more.
+        startRecording()
+        val noise = listOf(0.4, -0.35, 0.3, -0.4, 0.2, -0.3, 0.35, -0.25)
+        repeat(40) { second ->
+            RecordingRepository.offer(
+                fix(
+                    metresNorth = 1.4 * (second + 1),
+                    secondsIn = second + 1L,
+                    speed = 1.4 + noise[second % noise.size],
+                ),
+            )
+        }
+
+        // 1.4 m/s is 714 s/km — 11:54 per kilometre.
+        val pace = RecordingRepository.state.value.currentPaceSecondsPerKm!!
+        assertEquals(714.0, pace, 40.0)
+    }
+
+    @Test
+    fun `a walk that stops reads as stopped rather than as a crawl`() {
+        startRecording()
+        repeat(20) { second ->
+            RecordingRepository.offer(fix(1.4 * (second + 1), second + 1L, speed = 1.4))
+        }
+        assertTrue(RecordingRepository.state.value.currentSpeed!! > 1.0)
+
+        // Standing still: fixes keep arriving from the same spot. The window
+        // stretches over an unchanging distance and the speed falls away by
+        // itself.
+        repeat(25) { second ->
+            RecordingRepository.offer(fix(1.4 * 20, 21L + second, speed = 0.0))
+        }
+        assertEquals(0.0, RecordingRepository.state.value.currentSpeed!!, 0.15)
     }
 
     @Test

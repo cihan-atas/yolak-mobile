@@ -55,6 +55,14 @@ enum class RecordingStatus {
  * @property weakSignal Whether the last fix was dropped for being too vague.
  *   Without this the screen says "waiting for GPS" while GPS is in fact
  *   arriving, which sends the user hunting for the wrong problem.
+ * @property approximatePosition Roughly where the phone is, from Wi-Fi and
+ *   cell towers rather than satellites. Never part of the track — it is far
+ *   too vague to measure a distance with — but it is what lets the map show
+ *   somewhere indoors instead of an empty grey square.
+ * @property awaitingSatellites Whether the recording has begun on nothing but
+ *   an approximate position. The clock runs; the distance does not, and cannot
+ *   until a real fix arrives. Shown on screen, because a distance stuck at
+ *   zero with no explanation looks exactly like a broken recorder.
  */
 data class RecordingState(
     val status: RecordingStatus = RecordingStatus.IDLE,
@@ -68,6 +76,8 @@ data class RecordingState(
     val stretchStartedAt: Long? = null,
     val lastSpeed: Double? = null,
     val acquiringSince: Long? = null,
+    val approximatePosition: TrackPoint? = null,
+    val awaitingSatellites: Boolean = false,
 ) {
     /**
      * Whether the wait for a usable fix has gone on long enough to offer

@@ -27,8 +27,10 @@
     <string name="record_permission_grant">İzin ver</string>
     <string name="record_weak_signal">Zayıf GPS sinyali (±%1$.0f m) — açık alana çık</string>
     <string name="record_waiting">GPS bekleniyor…</string>
+    <string name="record_awaiting_satellites">Konum yaklaşık — uydu sinyali gelince mesafe sayılmaya başlar</string>
     <string name="record_points_count">%1$d nokta · ±%2$.0f m</string>
-    <string name="record_location_off">Telefonun konum servisi kapalı.</string>
+    <string name="record_location_off">Telefonun konum servisi kapalı — kayıt hiçbir nokta alamaz.</string>
+    <string name="record_location_open">Konum ayarlarını aç</string>
     <string name="record_acquiring">GPS sinyali bekleniyor…</string>
     <string name="record_acquiring_accuracy">Şu an ±%1$.0f m · ±10 m altına inince başlayacak</string>
     <string name="record_acquiring_hint">Açık alanda birkaç saniye sürer. İyi sinyalle
@@ -61,6 +63,19 @@
 
     <!-- Kayıt sonucu -->
     <string name="outcome_queued">Kayıt alındı (%1$d nokta) — yükleniyor</string>
+    <string name="review_title">Kaydı bitirdin</string>
+    <string name="review_summary">%1$s · %2$s · %3$d nokta</string>
+    <string name="review_hint">Kaydedince ad, gizlilik ve fotoğraf ayarları açılır.</string>
+    <string name="review_keep">Kaydet</string>
+    <string name="review_discard">Sil</string>
+    <string name="review_back">Geri dön — kayda devam et</string>
+    <string name="review_discard_confirm">Bu kayıt silinsin mi? Geri alınamaz.</string>
+    <string name="review_uploading">Yükleniyor…</string>
+    <string name="review_queued_offline">Sunucuya ulaşılamadı — kayıt kuyrukta, ağ gelince yüklenecek.</string>
+    <string name="review_saved">Kayıt yüklendi.</string>
+    <string name="review_refused">Sunucu kaydı kabul etmedi (HTTP %1$d). Kayıt telefonda duruyor;
+        çıkış yapıp yeniden giriş yapmayı dene.</string>
+    <string name="review_signed_out">Oturum kapalı — kayıt telefonda, giriş yapınca yüklenecek.</string>
     <string name="outcome_too_short">Kayıt yüklenmedi: GPS noktası alınamadı.
         Kapalı alanda alıcı konum üretemez; açık havada tekrar dene.</string>
 
