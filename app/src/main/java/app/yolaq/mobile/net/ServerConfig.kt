@@ -26,6 +26,16 @@ data class ServerConfig(
     /** Absolute URL of the activity file upload endpoint. */
     val uploadUrl: String get() = "$baseUrl/api/v1/activities/create/upload"
 
+    /**
+     * Absolute URL for setting one activity's visibility.
+     *
+     * @param activityId The activity.
+     * @param visibility 0 public, 1 followers, 2 private.
+     * @return The endpoint.
+     */
+    fun activityVisibilityUrl(activityId: Long, visibility: Int): String =
+        "$baseUrl/api/v1/activities/$activityId/visibility/$visibility"
+
     /** Absolute URL of the login endpoint. */
     val loginUrl: String get() = "$baseUrl/api/v1/auth/login"
 

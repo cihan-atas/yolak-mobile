@@ -10,6 +10,7 @@
     <string name="recording_paused">Duraklatıldı</string>
     <string name="recording_progress">%1$.3f km · %2$d dk</string>
     <string name="recording_acquiring_accuracy">GPS sinyali bekleniyor (±%1$.0f m)</string>
+    <string name="recording_awaiting_decision">Duraklatıldı — kaydedilmeyi bekliyor</string>
 
     <!-- Recording screen -->
     <string name="record_start">Kaydı başlat</string>
@@ -39,6 +40,62 @@
         başlamak, kaydın sahte mesafe biriktirmesini engeller.</string>
     <string name="record_start_anyway">Yine de başlat</string>
     <string name="record_cancel">Vazgeç</string>
+    <!-- Short enough to sit inside the round start button. -->
+    <string name="record_start_short">BAŞLA</string>
+    <!-- Shown while the finish button is being held down. -->
+    <string name="record_stop_holding">Basılı tut…</string>
+
+    <!-- Metric labels and units, shared by the strip and the full-screen page -->
+    <string name="stat_distance">Mesafe</string>
+    <string name="stat_duration">Süre</string>
+    <string name="stat_pace">Tempo</string>
+    <string name="stat_speed">Hız</string>
+    <string name="stat_avg_pace">Ort. tempo</string>
+    <string name="stat_avg_speed">Ort. hız</string>
+    <string name="stat_points">Nokta</string>
+    <string name="unit_km">km</string>
+    <string name="unit_kmh">km/sa</string>
+    <string name="unit_per_km">/km</string>
+    <string name="value_none">—:—</string>
+    <string name="stat_elevation">Tırmanış</string>
+
+    <!-- Share image composer -->
+    <string name="share_title">Görsel paylaş</string>
+    <string name="share_close">Kapat</string>
+    <string name="share_preview">Paylaşılacak görselin önizlemesi</string>
+    <string name="share_format_story">Hikâye</string>
+    <string name="share_format_square">Kare</string>
+    <string name="share_show_route">Rota</string>
+    <string name="share_pick_photo">Fotoğraf seç</string>
+    <string name="share_change_photo">Fotoğrafı değiştir</string>
+    <string name="share_remove_photo">Kaldır</string>
+    <string name="share_save">Galeriye kaydet</string>
+    <string name="share_send">Paylaş</string>
+    <string name="share_saved">Görsel galeriye kaydedildi.</string>
+    <string name="share_failed">Görsel hazırlanamadı.</string>
+    <string name="share_photo_failed">Fotoğraf okunamadı — başka bir tane dene.</string>
+    <string name="share_reset">Sıfırla</string>
+    <string name="share_drag_hint">Parçaları sürükleyerek taşı, iki parmakla büyüt/küçült</string>
+    <string name="share_route_line">Çizgi</string>
+    <string name="share_route_map">Harita</string>
+    <string name="share_map_standard">Standart</string>
+    <string name="share_map_satellite">Uydu</string>
+    <string name="share_map_dark">Koyu</string>
+    <string name="share_map_failed">Harita alınamadı — bağlantını kontrol et.</string>
+    <string name="share_tab_image">Görsel</string>
+    <string name="share_tab_parts">Parçalar</string>
+    <string name="share_tab_route">Rota</string>
+    <string name="share_route_colour">Çizgi rengi</string>
+    <string name="share_route_off">Rota kapalı. Açmak için Parçalar sekmesinden ekle.</string>
+    <string name="share_no_route">Bu etkinlikte çizilecek rota yok.</string>
+    <string name="colour_orange">Turuncu</string>
+    <string name="colour_white">Beyaz</string>
+    <string name="colour_green">Yeşil</string>
+    <string name="colour_yellow">Sarı</string>
+    <string name="colour_cyan">Turkuaz</string>
+    <string name="colour_magenta">Magenta</string>
+    <string name="share_element_title">Başlık</string>
+    <string name="share_element_subtitle">Spor · tarih</string>
 
     <!-- Sports -->
     <string name="sport_running">Koşu</string>
@@ -65,21 +122,34 @@
 
     <!-- Kayıt sonucu -->
     <string name="outcome_queued">Kayıt alındı (%1$d nokta) — yükleniyor</string>
-    <string name="review_title">Kaydı bitirdin</string>
-    <string name="review_summary">%1$s · %2$s · %3$d nokta</string>
-    <string name="review_hint">Kaydedince ad, gizlilik ve fotoğraf ayarları açılır.</string>
-    <string name="review_keep">Kaydet</string>
-    <string name="review_discard">Sil</string>
-    <string name="review_back">Geri dön — kayda devam et</string>
-    <string name="review_discard_confirm">Bu kayıt silinsin mi? Geri alınamaz.</string>
-    <string name="review_uploading">Yükleniyor…</string>
-    <string name="review_queued_offline">Sunucuya ulaşılamadı — kayıt kuyrukta, ağ gelince yüklenecek.</string>
-    <string name="review_saved">Kayıt yüklendi.</string>
-    <string name="review_refused">Sunucu kaydı kabul etmedi (HTTP %1$d). Kayıt telefonda duruyor;
-        çıkış yapıp yeniden giriş yapmayı dene.</string>
-    <string name="review_signed_out">Oturum kapalı — kayıt telefonda, giriş yapınca yüklenecek.</string>
     <string name="outcome_too_short">Kayıt yüklenmedi: GPS noktası alınamadı.
         Kapalı alanda alıcı konum üretemez; açık havada tekrar dene.</string>
+
+    <!-- Etkinliği kaydetme sayfası -->
+    <string name="save_title">Kayıt duraklatıldı</string>
+    <string name="save_title_recovered">Kaydedilmemiş kayıt</string>
+    <string name="save_name">Etkinlik adı</string>
+    <string name="save_description">Not (isteğe bağlı)</string>
+    <string name="save_visibility">Kimler görebilir</string>
+    <string name="save_keep">Etkinliği kaydet</string>
+    <string name="save_saving">Kaydediliyor…</string>
+    <string name="save_discard">Kaydı sil</string>
+    <string name="save_discard_title">Bu kayıt silinsin mi?</string>
+    <string name="save_discard_body">Kayıt yalnızca telefonda; silinirse geri getirilemez.</string>
+    <string name="visibility_default">Profil ayarı</string>
+    <string name="visibility_public">Herkese açık</string>
+    <string name="visibility_followers">Takipçiler</string>
+    <string name="visibility_private">Gizli</string>
+
+    <!-- Yükleme durumu -->
+    <string name="upload_channel_name">Yükleme</string>
+    <string name="upload_running">Etkinlik yükleniyor…</string>
+    <string name="upload_done">Etkinlik hazır · aç</string>
+    <string name="upload_saved">Etkinlik yüklendi</string>
+    <string name="upload_offline">Sunucuya ulaşılamadı — kayıt kuyrukta, ağ gelince yüklenecek</string>
+    <string name="upload_refused">Sunucu kaydı kabul etmedi (HTTP %1$d) — kayıt telefonda duruyor</string>
+    <string name="upload_signed_out">Oturum kapalı — kayıt telefonda, giriş yapınca yüklenecek</string>
+    <string name="upload_dismiss">Kapat</string>
 
     <!-- Rota takibi -->
     <string name="route_pick_title">Takip edilecek rota</string>

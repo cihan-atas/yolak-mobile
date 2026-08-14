@@ -30,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.yolaq.mobile.R
 import app.yolaq.mobile.net.ServerSettings
+import app.yolaq.mobile.share.ShareCard
 
 /** URL scheme the page uses to ask for the native recorder. */
 private const val RECORD_SCHEME = "yolak"
@@ -61,6 +63,11 @@ private const val TAG = "WebScreen"
  *
  * @param visible Whether the page is the thing on screen.
  * @param onRecordRequested Called when the page's record entry is tapped.
+ * @param onShareRequested Called with an activity's figures and track when the
+ *   page's share entry is tapped, to open the native image composer.
+ * @param onSignedOut Called when the page logs out, so the native half can
+ *   forget its own credentials too. The page cannot do this itself: the upload
+ *   key lives in Android's preferences, out of reach of anything in a browser.
  * @param onNavigatorReady Hands back a function that navigates the page, so
  *   the recorder's own bar can move the app underneath it.
  * @param modifier Layout modifier.
@@ -69,6 +76,8 @@ private const val TAG = "WebScreen"
 fun WebScreen(
     visible: Boolean,
     onRecordRequested: () -> Unit,
+    onShareRequested: (ShareCard) -> Unit = {},
+    onSignedOut: () -> Unit = {},
     onNavigatorReady: ((String) -> Unit) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -78,6 +87,12 @@ fun WebScreen(
     // the tab stuck on "no server" until the app is killed. A prefs read per
     // recomposition is nothing, and recompositions here are tab switches.
     val config = ServerSettings.load(context)
+
+    // The web view outlives the composition that built it, so the callback it
+    // captured would be a stale one after any recomposition; this keeps the
+    // bridge pointing at the current handler.
+    val shareRequested by rememberUpdatedState(onShareRequested)
+    val signedOut by rememberUpdatedState(onSignedOut)
 
     if (config == null) {
         if (!visible) {
@@ -151,6 +166,43 @@ fun WebScreen(
             // the recorder at all — a browser cannot record with the screen
             // off, so the entry would be a dead button anywhere else.
             settings.userAgentString = "${settings.userAgentString} yolak-app/1"
+
+            // How the activity page hands an outing to the native image
+            // composer. A bridge object rather than another custom URL: the
+            // payload carries the whole track, which is far past what a URL
+            // can hold, and the page already has it loaded to draw its own map
+            // — so nothing has to be fetched a second time and the feature
+            // needs no read scope on the upload key.
+            //
+            // Safe to expose here because this view only ever loads our own
+            // server (see the client below), and since API 17 only annotated
+            // methods are reachable from JavaScript at all.
+            addJavascriptInterface(
+                object {
+                    @android.webkit.JavascriptInterface
+                    fun share(payload: String) {
+                        val card = ShareCard.fromJson(payload) ?: return
+                        // The bridge is called on a WebView worker thread;
+                        // opening a screen from there would crash Compose.
+                        post { shareRequested(card) }
+                    }
+
+                    /**
+                     * The page's logout, extended to this half of the app.
+                     *
+                     * A bridge call rather than watching for the login route:
+                     * `shouldOverrideUrlLoading` never fires on the SPA's own
+                     * navigation — nothing is loaded — and even if it did, an
+                     * expired session lands on the same route without anyone
+                     * having asked to sign out.
+                     */
+                    @android.webkit.JavascriptInterface
+                    fun signOut() {
+                        post { signedOut() }
+                    }
+                },
+                "yolakApp",
+            )
 
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(

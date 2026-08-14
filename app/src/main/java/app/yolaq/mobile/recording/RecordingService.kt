@@ -64,6 +64,26 @@ class RecordingService : Service() {
     /** What is being recorded; needed at the end, to write the GPX. */
     private var sport: SportType = SportType.DEFAULT
 
+    /**
+     * Whether location is currently being delivered to us.
+     *
+     * Tracked because the subscription is now dropped and picked back up
+     * mid-recording — "Bitir" holds the outing rather than ending it, and
+     * listening to satellites for a recording nobody has decided about is
+     * battery spent on fixes that are thrown away.
+     */
+    private var locationActive = false
+
+    /**
+     * Whether a finished recording is waiting for the athlete to decide.
+     *
+     * The recording is paused in this state, but a plain "Duraklatıldı" is the
+     * wrong thing for the notification to say: the outing is not going to
+     * resume on its own, and someone who put the phone in their pocket at the
+     * finish line needs to be told there is a question waiting.
+     */
+    private var awaitingDecision = false
+
     private val listener = LocationListener { location -> onFix(location) }
 
     /** Reads the accelerometer; see [MotionWindow] for why this exists. */
@@ -138,7 +158,22 @@ class RecordingService : Service() {
             }
 
             ACTION_RESUME -> {
+                // May be a plain resume, or the athlete backing out of the save
+                // sheet. The second case has no location subscription left, so
+                // this asks for one either way; re-requesting an existing one
+                // is what the platform does anyway when the same listener is
+                // registered twice.
+                awaitingDecision = false
                 RecordingRepository.resume()
+                if (RecordingRepository.state.value.status != RecordingStatus.RECORDING) {
+                    // The notification outlived what it referred to — the
+                    // recording was saved or thrown away from the screen while
+                    // the action was still on the lock screen.
+                    Log.i(TAG, "Sürdürülecek kayıt yok")
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                ensureLocationUpdates()
                 updateNotification()
             }
 
@@ -156,6 +191,21 @@ class RecordingService : Service() {
             ACTION_START_ANYWAY -> {
                 RecordingRepository.startAnyway()
                 updateNotification()
+            }
+
+            // "Bitir": the recording is held, not ended. Nothing is written and
+            // nothing is sent — the athlete has only asked to be shown what
+            // they recorded, and may well go back to it.
+            ACTION_FINISH -> {
+                finishForReview()
+            }
+
+            // The athlete has decided: the recording was kept or thrown away by
+            // whoever handled the sheet, and there is nothing left to hold.
+            ACTION_DISMISS -> {
+                releaseRecording()
+                stopSelf()
+                return START_NOT_STICKY
             }
 
             ACTION_STOP -> {
@@ -245,6 +295,16 @@ class RecordingService : Service() {
      */
     private fun resumeLocationUpdates() {
         startForeground(NOTIFICATION_ID, buildNotification())
+        // Checked here rather than only at the call sites: this is reached from
+        // a system restart as well as from the screen, and the permission can
+        // have been withdrawn from settings in between.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "Konum izni yok, güncellemeler açılamadı")
+            return
+        }
+        locationActive = true
         startMotionUpdates()
         runCatching {
             locationManager.requestLocationUpdates(
@@ -289,7 +349,12 @@ class RecordingService : Service() {
      * approximate position, so it can never reach the track.
      */
     private fun seedApproximatePosition() {
-        if (!hasLocationPermission()) {
+        // Inlined rather than asked of hasLocationPermission(): the platform
+        // annotation is only honoured when the check is visible in the same
+        // method, and a helper leaves the call flagged.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
             return
         }
         val cached = runCatching {
@@ -304,6 +369,100 @@ class RecordingService : Service() {
         }.getOrNull() ?: return
 
         RecordingRepository.offerApproximate(cached.toTrackPoint())
+    }
+
+    /**
+     * Subscribes to location if we are not already subscribed.
+     *
+     * @see locationActive
+     */
+    private fun ensureLocationUpdates() {
+        if (locationActive) {
+            return
+        }
+        startBroadcasting()
+        resumeLocationUpdates()
+    }
+
+    /**
+     * Holds a finished recording for the athlete to decide about.
+     *
+     * This is what "Bitir" now does. It used to stop the service, write the
+     * GPX on this thread and hand the file to the uploader, all before the
+     * screen had drawn anything — which is why finishing a long outing froze
+     * for a moment and then threw the athlete onto a different screen. None of
+     * that belongs at the moment a button is pressed: the recording is merely
+     * paused, everything stays exactly where it is, and the sheet that opens
+     * asks what to do with it. Strava works the same way — pause, then finish,
+     * then a save screen you can still back out of.
+     *
+     * The service deliberately stays in the foreground. It is holding a
+     * recording that can still be resumed, and a service that stood down here
+     * would have to be built back up from nothing — new notification, new
+     * subscription, state reconstructed from the review — for the athlete who
+     * simply decided to keep going.
+     */
+    private fun finishForReview() {
+        // Nothing was ever recorded, so there is nothing to decide about; this
+        // is the athlete backing out of the signal wait.
+        if (RecordingRepository.state.value.status == RecordingStatus.ACQUIRING) {
+            stopRecording()
+            return
+        }
+
+        // The fixes still arriving are for a recording that has stopped
+        // accepting them, and each one costs power to produce.
+        runCatching { locationManager.removeUpdates(listener) }
+        locationActive = false
+        stopMotionUpdates()
+        broadcaster?.stop()
+        broadcaster = null
+
+        RecordingRepository.pause()
+        val state = RecordingRepository.state.value
+        Log.i(
+            TAG,
+            "Kayıt karar için tutuldu: %.2f km, %d nokta".format(
+                state.distanceMeters / 1000.0,
+                state.points.size,
+            ),
+        )
+
+        val held = RecordingFinisher.hold(
+            context = this,
+            points = state.points,
+            sport = sport,
+            distanceMeters = state.distanceMeters,
+            elapsedMillis = state.elapsedMillis(),
+        )
+        if (!held) {
+            // Too short to be an outing. The finisher has already said so on
+            // screen; there is no question to keep a service alive for.
+            releaseRecording()
+            stopSelf()
+            return
+        }
+        awaitingDecision = true
+        updateNotification()
+    }
+
+    /**
+     * Lets go of a recording that has been decided about.
+     *
+     * Whoever handled the sheet has already queued the file or thrown it away,
+     * so this only has to undo what the service is holding: the location
+     * subscription, the live stream, the in-memory recording and the
+     * notification.
+     */
+    private fun releaseRecording() {
+        runCatching { locationManager.removeUpdates(listener) }
+        locationActive = false
+        stopMotionUpdates()
+        broadcaster?.stop()
+        broadcaster = null
+        awaitingDecision = false
+        RecordingRepository.stop()
+        stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     /**
@@ -344,14 +503,14 @@ class RecordingService : Service() {
             distanceMeters = finished.distanceMeters,
             elapsedMillis = finished.elapsedMillis(),
             reportOutcome = !cancelledBeforeStart,
-            // Pressing "Bitir" is the decision. Everything after it — the
-            // name, the visibility, the photos, and throwing it away — lives
-            // in the activity's own edit form, so the recording goes up and
-            // the screen opens that form instead of asking the same questions
-            // twice in two different places.
-            keepImmediately = true,
+            // Not resumable: unlike "Bitir", this path has already torn the
+            // recording down, so a sheet opened over it can only keep or
+            // discard.
+            live = false,
         )
 
+        locationActive = false
+        awaitingDecision = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -441,6 +600,11 @@ class RecordingService : Service() {
         )
 
         val text = when {
+            // Ranked first: a paused recording that is waiting to be saved is
+            // not going to resume by itself, and saying only "Duraklatıldı"
+            // is how an outing sits undecided in a pocket.
+            awaitingDecision -> getString(R.string.recording_awaiting_decision)
+
             state.status == RecordingStatus.ACQUIRING ->
                 state.lastAccuracy?.let { getString(R.string.recording_acquiring_accuracy, it) }
                     ?: getString(R.string.recording_waiting_for_fix)
@@ -451,14 +615,30 @@ class RecordingService : Service() {
             else -> getString(R.string.recording_progress, km, minutes)
         }
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_mylocation)
             .setContentIntent(open)
             .setOngoing(true)
             .setSilent(true)
-            .build()
+
+        // Carrying on is the one decision that can be made without looking at
+        // the screen, and the one people make while still moving.
+        if (awaitingDecision) {
+            builder.addAction(
+                0,
+                getString(R.string.record_resume),
+                PendingIntent.getService(
+                    this,
+                    1,
+                    Intent(this, RecordingService::class.java).setAction(ACTION_RESUME),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                ),
+            )
+        }
+
+        return builder.build()
     }
 
     /** Refreshes the ongoing notification in place. */
@@ -507,6 +687,8 @@ class RecordingService : Service() {
         const val ACTION_PAUSE = "app.yolaq.mobile.PAUSE"
         const val ACTION_RESUME = "app.yolaq.mobile.RESUME"
         const val ACTION_STOP = "app.yolaq.mobile.STOP"
+        const val ACTION_FINISH = "app.yolaq.mobile.FINISH"
+        const val ACTION_DISMISS = "app.yolaq.mobile.DISMISS"
         const val ACTION_REOPEN = "app.yolaq.mobile.REOPEN"
 
         /**

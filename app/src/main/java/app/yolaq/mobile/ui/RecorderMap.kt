@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
 import android.util.Log
+import android.view.View
 import android.webkit.GeolocationPermissions
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -21,8 +22,26 @@ import androidx.compose.ui.viewinterop.AndroidView
 import app.yolaq.mobile.net.ServerConfig
 import app.yolaq.mobile.recording.TrackPoint
 import java.util.Locale
+import kotlin.coroutines.resume
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 private const val TAG = "RecorderMap"
+
+/**
+ * How often to ask whether the page has registered its API yet.
+ *
+ * `onPageFinished` fires when the document has loaded, which is *before* the
+ * Vue app mounts and defines `window.yolak`. Seeding the track on that signal
+ * alone threw the whole track away: the call landed on a page that had no API
+ * to receive it, was silently dropped, and nothing ever sent the track again —
+ * only the per-fix position updates, so the map drew a fresh line from
+ * wherever the athlete happened to be standing.
+ */
+private const val API_POLL_MS = 150L
+
+/** How long to keep asking before giving the page up as broken. */
+private const val API_WAIT_MS = 20_000L
 
 /**
  * The live map behind the recording screen.
@@ -41,6 +60,8 @@ private const val TAG = "RecorderMap"
  * @param config Where the web app lives.
  * @param points The track recorded so far.
  * @param route The route being followed, if any.
+ * @param active Whether the map is the thing being looked at. Hidden rather
+ *   than removed when it is not — see the `update` block.
  * @param modifier Layout modifier.
  */
 @Composable
@@ -48,6 +69,7 @@ fun RecorderMap(
     config: ServerConfig,
     points: List<TrackPoint>,
     route: List<TrackPoint>,
+    active: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -64,16 +86,41 @@ fun RecorderMap(
      */
     var web by remember { mutableStateOf<WebView?>(null) }
 
-    /** Whether the page has finished loading and registered its API. */
-    var pageReady by remember { mutableStateOf(false) }
+    /** Whether the document has loaded. Not the same as being able to talk to it. */
+    var pageLoaded by remember { mutableStateOf(false) }
 
-    // The whole state is pushed once the page is ready, not just the next fix.
-    // Fixes that arrived while it was still loading were being dropped on the
-    // floor: indoors, where a single fix may be all there is, the map sat on
-    // the empty world view and looked broken.
-    LaunchedEffect(pageReady, web) {
+    /** Whether `window.yolak` exists, which is when calls actually land. */
+    var apiReady by remember { mutableStateOf(false) }
+
+    // Waits for the page's own API rather than trusting the load event; see
+    // API_POLL_MS for the outing this cost.
+    LaunchedEffect(pageLoaded, web) {
         val view = web ?: return@LaunchedEffect
-        if (!pageReady) {
+        if (!pageLoaded) {
+            return@LaunchedEffect
+        }
+        val deadline = System.currentTimeMillis() + API_WAIT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (view.hasRecorderApi()) {
+                apiReady = true
+                return@LaunchedEffect
+            }
+            delay(API_POLL_MS)
+        }
+        Log.w(TAG, "Harita sayfası API'sini kaydetmedi, iz çizilemeyecek")
+    }
+
+    // The whole state is pushed once the page can receive it, not just the next
+    // fix. Fixes that arrived while it was still loading were being dropped on
+    // the floor: indoors, where a single fix may be all there is, the map sat
+    // on the empty world view and looked broken.
+    //
+    // Re-run when the map comes back into view as well. It is a local call
+    // costing nothing, and it is the one thing that guarantees the line on
+    // screen is the whole outing rather than whatever arrived last.
+    LaunchedEffect(apiReady, web, active) {
+        val view = web ?: return@LaunchedEffect
+        if (!apiReady || !active) {
             return@LaunchedEffect
         }
         if (route.isNotEmpty()) {
@@ -100,9 +147,9 @@ fun RecorderMap(
 
     // Fed whenever the route changes, including the moment one is chosen
     // mid-screen. Sent whole because a route does not grow point by point.
-    LaunchedEffect(route, pageReady, web) {
+    LaunchedEffect(route, apiReady, web) {
         val view = web ?: return@LaunchedEffect
-        if (route.isEmpty() || !pageReady) {
+        if (route.isEmpty() || !apiReady) {
             return@LaunchedEffect
         }
         view.call("setRoute(${route.toJsArray()})")
@@ -111,9 +158,13 @@ fun RecorderMap(
     // Only the newest fix is pushed; the page keeps the line it has been
     // given. Re-sending the whole track on every fix would grow to megabytes
     // of JavaScript per second on a long outing.
-    LaunchedEffect(points.size, pageReady, web) {
+    //
+    // Skipped entirely while the map is hidden: the page would append every
+    // one of them to a line nobody is looking at, and the seeding effect above
+    // replaces the whole track when it comes back anyway.
+    LaunchedEffect(points.size, apiReady, web, active) {
         val view = web ?: return@LaunchedEffect
-        if (!pageReady) {
+        if (!apiReady || !active) {
             return@LaunchedEffect
         }
         val last = points.lastOrNull() ?: return@LaunchedEffect
@@ -139,7 +190,7 @@ fun RecorderMap(
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String?) {
                         super.onPageFinished(view, url)
-                        pageReady = true
+                        pageLoaded = true
                     }
                 }
                 webChromeClient = object : WebChromeClient() {
@@ -162,12 +213,30 @@ fun RecorderMap(
                 web = this
             }
         },
+        // Hidden, never removed. Taking the map out of the composition destroys
+        // the view, and a destroyed view means a reloaded page: the drawn track
+        // goes with it, the map reopens on the world, and the outing appears to
+        // restart from wherever the athlete is standing. A hidden WebView keeps
+        // its map, its zoom and its line for nothing.
+        update = { view -> view.visibility = if (active) View.VISIBLE else View.GONE },
         onRelease = { view ->
             web = null
-            pageReady = false
+            pageLoaded = false
+            apiReady = false
             view.destroy()
         },
     )
+}
+
+/**
+ * Whether the page has defined the API the recorder drives it through.
+ *
+ * @return True once `window.yolak` exists.
+ */
+private suspend fun WebView.hasRecorderApi(): Boolean = suspendCancellableCoroutine { waiting ->
+    evaluateJavascript("!!(window.yolak);") { result ->
+        waiting.resume(result == "true")
+    }
 }
 
 /**
@@ -212,6 +281,14 @@ private fun List<TrackPoint>.toJsArray(): String = joinToString(
  *   was withdrawn between the screen opening and this call.
  */
 private fun lastKnownPosition(context: android.content.Context): Pair<Double, Double>? {
+    // Asked before the recorder has permission as often as after: the map is
+    // drawn the moment the screen opens, and the permission prompt only
+    // appears when the athlete presses start.
+    if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) !=
+        PackageManager.PERMISSION_GRANTED
+    ) {
+        return null
+    }
     val manager = context.getSystemService(android.content.Context.LOCATION_SERVICE)
         as? android.location.LocationManager ?: return null
     return runCatching {

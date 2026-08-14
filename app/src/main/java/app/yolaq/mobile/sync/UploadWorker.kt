@@ -1,15 +1,21 @@
 package app.yolaq.mobile.sync
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
+import androidx.work.ForegroundInfo
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import app.yolaq.mobile.R
 import app.yolaq.mobile.net.ApiResult
 import app.yolaq.mobile.net.ServerSettings
 import app.yolaq.mobile.net.YolakApi
@@ -27,6 +33,34 @@ import kotlinx.coroutines.withContext
  * in-process loop cannot.
  */
 class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+
+    /**
+     * The notification an expedited run shows on older Androids.
+     *
+     * Below Android 12 the system grants expedited work by running it as a
+     * foreground service, and a worker that cannot describe that service is
+     * refused outright — so without this, asking for a prompt upload would
+     * make the upload fail on exactly the phones that need every break they
+     * can get. On Android 12 and up this is never asked for.
+     */
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        val manager = applicationContext.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(
+                UPLOAD_CHANNEL_ID,
+                applicationContext.getString(R.string.upload_channel_name),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply { setShowBadge(false) },
+        )
+        val notification = NotificationCompat.Builder(applicationContext, UPLOAD_CHANNEL_ID)
+            .setContentTitle(applicationContext.getString(R.string.app_name))
+            .setContentText(applicationContext.getString(R.string.upload_running))
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setOngoing(true)
+            .setSilent(true)
+            .build()
+        return ForegroundInfo(UPLOAD_NOTIFICATION_ID, notification)
+    }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val config = ServerSettings.load(applicationContext)
@@ -61,11 +95,17 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 when (val result = api.uploadGpx(file)) {
                     is ApiResult.Success -> {
                         Log.i(TAG, "Yüklendi: ${file.name}")
-                        queue.complete(file)
-                        // The screen uses this to open the new activity's edit
-                        // form, where the name, the visibility and the photos
-                        // are. An answer without an id still means it landed.
                         val id = createdActivityId(result.body)
+                        // Before the file is dropped: the metadata lives beside
+                        // it, and completing first would delete the record of
+                        // what still had to be applied.
+                        if (id != null) {
+                            applyMeta(api, queue.meta(file), id)
+                        }
+                        queue.complete(file)
+                        // The strip over the page uses this to say the outing
+                        // landed and to offer opening it. An answer without an
+                        // id still means it landed.
                         RecordingFinisher.report(
                             file.name,
                             if (id == null) {
@@ -108,6 +148,32 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     }
 
     /**
+     * Applies the one choice the save sheet collected that the file could not
+     * carry.
+     *
+     * Best-effort by design: the recording is already on the server, and an
+     * athlete whose visibility did not take is in a far better place than one
+     * whose outing was retried, duplicated or held back over it. So a failure
+     * here is logged and the upload still counts as done. A key minted before
+     * the app asked for write access lands here as a 403, which is why it is
+     * only ever a log line.
+     *
+     * @param api The client to use.
+     * @param meta What was stored beside the file.
+     * @param activityId The activity the server created.
+     */
+    private fun applyMeta(api: YolakApi, meta: Map<String, String>, activityId: Long) {
+        val visibility = meta[RecordingFinisher.META_VISIBILITY]?.toIntOrNull() ?: return
+        when (val result = api.setActivityVisibility(activityId, visibility)) {
+            is ApiResult.Success -> Log.i(TAG, "Görünürlük uygulandı ($visibility): $activityId")
+            is ApiResult.Permanent ->
+                Log.w(TAG, "Görünürlük uygulanamadı (${result.status}): ${result.body}")
+
+            is ApiResult.Transient -> Log.w(TAG, "Görünürlük uygulanamadı: ${result.reason}")
+        }
+    }
+
+    /**
      * Picks the created activity's id out of an upload response.
      *
      * Read with a regex rather than a JSON parser: the app carries no JSON
@@ -128,6 +194,11 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
 
         /** The first `"id": <number>` in the server's answer. */
         private val ID_PATTERN = Regex("\"id\"\\s*:\\s*(\\d+)")
+
+        /** Where the expedited-run notification posts on older Androids. */
+        private const val UPLOAD_CHANNEL_ID = "upload"
+
+        private const val UPLOAD_NOTIFICATION_ID = 2
 
         /** One queue, one worker: a second run would race the first. */
         private const val WORK_NAME = "upload-activities"
@@ -167,6 +238,17 @@ class UploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                         .build(),
                 )
                 .setBackoffCriteria(BackoffPolicy.LINEAR, BACKOFF_SECONDS, TimeUnit.SECONDS)
+                .apply {
+                    // An athlete who has just pressed "Kaydet" is watching for
+                    // the outing to appear. Ordinary work is scheduled when the
+                    // system feels like it, which was seconds of nothing
+                    // happening for no reason anyone could see; expedited work
+                    // starts now, and falls back to the ordinary queue rather
+                    // than failing when the app has no quota left.
+                    if (urgent) {
+                        setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                    }
+                }
                 .build()
 
             val policy = if (urgent) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP

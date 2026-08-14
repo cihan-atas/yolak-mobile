@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Only the one directory the share composer writes into. Exposing the whole
+    cache would put the recording journal and the upload queue behind the same
+    provider, and there is no reason for another app to be able to name them.
+-->
+<paths>
+    <cache-path
+        name="shares"
+        path="shares/" />
+</paths>

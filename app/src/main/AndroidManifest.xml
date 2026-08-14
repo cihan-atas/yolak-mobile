@@ -45,5 +45,21 @@
             android:name=".recording.RecordingService"
             android:exported="false"
             android:foregroundServiceType="location" />
+
+        <!--
+            Hands the composed share image to whichever app the athlete picks.
+            Another app cannot read this one's cache directory, and a file://
+            URI is refused outright since Android 7 — a content provider with a
+            per-share grant is the only way an image reaches Instagram.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.shares"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/shared_paths" />
+        </provider>
     </application>
 </manifest>

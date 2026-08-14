@@ -34,9 +34,18 @@ object GpxWriter {
      * @param points The accepted fixes, oldest first.
      * @param sport What the athlete was doing.
      * @param name Track name shown on the activity.
+     * @param description The athlete's note, or empty for none. Carried in the
+     *   track's `desc`, which the server reads into the activity's
+     *   description — so a note typed on the phone arrives with the upload
+     *   instead of needing a second request that can fail on its own.
      * @return The GPX document.
      */
-    fun write(points: List<TrackPoint>, sport: SportType, name: String): String = buildString {
+    fun write(
+        points: List<TrackPoint>,
+        sport: SportType,
+        name: String,
+        description: String = "",
+    ): String = buildString {
         append("""<?xml version="1.0" encoding="UTF-8"?>""").append('\n')
         append(
             """<gpx version="1.1" creator="$CREATOR" """ +
@@ -55,6 +64,9 @@ object GpxWriter {
         append("    <name>").append(escape(name)).append("</name>\n")
         // The server maps this to its own activity type; without it every
         // outing arrives as a generic workout.
+        if (description.isNotBlank()) {
+            append("    <desc>").append(escape(description)).append("</desc>\n")
+        }
         append("    <type>").append(sport.gpxType).append("</type>\n")
         append("    <trkseg>\n")
         points.forEach { point -> appendPoint(point) }

@@ -10,9 +10,13 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * Turns a track into a queued upload.
@@ -25,6 +29,34 @@ import kotlinx.coroutines.flow.asStateFlow
 object RecordingFinisher {
 
     private const val TAG = "RecordingFinisher"
+
+    /**
+     * Where saving happens.
+     *
+     * Owned by the finisher and never cancelled: a save must outlive the
+     * screen that asked for it, which closes immediately so the athlete is not
+     * left watching a disk write.
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Metadata key: the visibility to apply once the activity exists. */
+    const val META_VISIBILITY = "visibility"
+
+    /**
+     * Who may see a saved activity.
+     *
+     * [DEFAULT] is its own answer rather than a missing one: an athlete who
+     * did not touch the control wants whatever their profile says, and sending
+     * a value anyway would quietly override a setting they made deliberately.
+     *
+     * @property value The server's code, or null to leave the account default.
+     */
+    enum class Visibility(val value: Int?) {
+        DEFAULT(null),
+        PUBLIC(0),
+        FOLLOWERS(1),
+        PRIVATE(2),
+    }
 
     /**
      * How the last finished recording ended.
@@ -67,12 +99,19 @@ object RecordingFinisher {
      * @property sport What was recorded.
      * @property distanceMeters How far, along the track.
      * @property elapsedMillis How long, from first fix to last.
+     * @property startedAt Epoch millis of the first fix, for the default name.
+     * @property live Whether the recording is still held by a running service
+     *   and can therefore simply be resumed. False for one recovered from a
+     *   journal after the process died: there is nothing left running, so
+     *   carrying on means rebuilding the recording from the track.
      */
     data class Review(
         val points: List<TrackPoint>,
         val sport: SportType,
         val distanceMeters: Double,
         val elapsedMillis: Long,
+        val startedAt: Long = points.firstOrNull()?.recordedAt ?: System.currentTimeMillis(),
+        val live: Boolean = true,
     )
 
     private val _pendingReview = MutableStateFlow<Review?>(null)
@@ -233,6 +272,10 @@ object RecordingFinisher {
      * @param context Any context.
      * @param points The accepted fixes, oldest first.
      * @param sport What was recorded.
+     * @param name What to call the activity; the default when left null.
+     * @param description The athlete's note, written into the GPX.
+     * @param visibility Who may see it, or null to leave the account default
+     *   alone.
      * @param reportOutcome Whether to surface the result on screen.
      * @param urgent Whether someone is waiting for this one right now.
      * @param arm Run on the queued file before the upload is asked for, so a
@@ -244,6 +287,9 @@ object RecordingFinisher {
         context: Context,
         points: List<TrackPoint>,
         sport: SportType,
+        name: String? = null,
+        description: String = "",
+        visibility: Visibility = Visibility.DEFAULT,
         reportOutcome: Boolean = true,
         urgent: Boolean = false,
         arm: (File) -> Unit = {},
@@ -260,8 +306,20 @@ object RecordingFinisher {
         }
 
         val startedAt = points.first().recordedAt
-        val gpx = GpxWriter.write(points, sport, activityName(context, sport, startedAt))
-        val file = Storage.queue(context).enqueue(gpx, startedAt)
+        val title = name?.trim()?.takeIf { it.isNotEmpty() }
+            ?: defaultName(context, sport, startedAt)
+        // Name, sport and description all travel inside the file: the server
+        // reads a track's name, type and description straight out of the GPX,
+        // so the athlete's choices arrive with the activity rather than as a
+        // second request that could fail on its own.
+        val gpx = GpxWriter.write(points, sport, title, description.trim())
+        // Visibility is the one thing GPX cannot carry, so it waits here for
+        // the uploader to apply once the activity exists.
+        val file = Storage.queue(context).enqueue(
+            content = gpx,
+            recordedAt = startedAt,
+            meta = visibility.value?.let { mapOf(META_VISIBILITY to it.toString()) } ?: emptyMap(),
+        )
         Log.i(TAG, "Kuyruğa alındı: ${file.name} (${points.size} nokta)")
 
         _lastOutcome.value = Outcome.Queued(points.size)
@@ -285,14 +343,8 @@ object RecordingFinisher {
      * @param distanceMeters How far, as the recorder measured it.
      * @param elapsedMillis How long the outing ran.
      * @param reportOutcome Whether a track too short to keep is worth saying so.
-     * @param keepImmediately Whether to send it straight up rather than ask.
-     *   True when the athlete has just pressed "Bitir" — they decided by
-     *   pressing it, and the decisions that remain (what to call it, who can
-     *   see it, whether to keep it at all) are the ones the activity's own
-     *   edit form already asks, so the recording goes up and that form opens.
-     *   False when the recording is being *offered back* after a crash: that
-     *   athlete never pressed anything, and publishing an outing they might
-     *   have deleted is exactly what this flow was built to stop.
+     * @param live Whether a running service is still holding the recording, so
+     *   that carrying on is a resume rather than a rebuild.
      * @return True when there is something to decide about.
      */
     fun hold(
@@ -302,7 +354,7 @@ object RecordingFinisher {
         distanceMeters: Double,
         elapsedMillis: Long,
         reportOutcome: Boolean = true,
-        keepImmediately: Boolean = false,
+        live: Boolean = true,
     ): Boolean {
         if (points.size < MIN_POINTS) {
             Log.i(TAG, "Kayıt çok kısa (${points.size} nokta), sorulmadan atıldı")
@@ -314,10 +366,13 @@ object RecordingFinisher {
             Storage.journal(context).clear()
             return false
         }
-        _pendingReview.value = Review(points, sport, distanceMeters, elapsedMillis)
-        if (keepImmediately) {
-            keep(context)
-        }
+        _pendingReview.value = Review(
+            points = points,
+            sport = sport,
+            distanceMeters = distanceMeters,
+            elapsedMillis = elapsedMillis,
+            live = live,
+        )
         return true
     }
 
@@ -348,6 +403,10 @@ object RecordingFinisher {
             // paused outing's gaps are already in these timestamps.
             elapsedMillis = (points.lastOrNull()?.recordedAt ?: 0) - (points.firstOrNull()?.recordedAt ?: 0),
             reportOutcome = false,
+            // Nothing is running: the service that held this one died with the
+            // process, so resuming has to put the track back rather than
+            // simply un-pausing.
+            live = false,
         )
     }
 
@@ -357,9 +416,20 @@ object RecordingFinisher {
      * Touches the disk, so it belongs off the main thread.
      *
      * @param context Any context.
+     * @param name What to call it, or null for the default.
+     * @param sport What it should be recorded as; the athlete may have picked
+     *   the wrong one before setting off and corrected it on the sheet.
+     * @param description The note to save with it.
+     * @param visibility Who may see it.
      * @return The queued file, or null when there was nothing under review.
      */
-    fun keep(context: Context): File? {
+    fun keep(
+        context: Context,
+        name: String? = null,
+        sport: SportType? = null,
+        description: String = "",
+        visibility: Visibility = Visibility.DEFAULT,
+    ): File? {
         val review = _pendingReview.value ?: return null
         _handover.value = null
         // Armed from inside, between the file being written and the upload
@@ -368,7 +438,10 @@ object RecordingFinisher {
         val file = queue(
             context = context,
             points = review.points,
-            sport = review.sport,
+            sport = sport ?: review.sport,
+            name = name,
+            description = description,
+            visibility = visibility,
             urgent = true,
             arm = { queued ->
                 awaitedFile = queued.name
@@ -378,6 +451,22 @@ object RecordingFinisher {
         Storage.journal(context).clear()
         _pendingReview.value = null
         return file
+    }
+
+    /**
+     * Drops the question without answering it, for a recording that is still
+     * running.
+     *
+     * "Bitir" only pauses now, so the service is still holding the outing and
+     * the journal is still being written to: carrying on is the service being
+     * told to resume, and this is only the sheet getting out of the way. The
+     * heavier [reopen] is for the other case — a recording recovered from disk,
+     * with nothing left running to resume.
+     */
+    fun dismissReview() {
+        clearHandover()
+        _lastOutcome.value = null
+        _pendingReview.value = null
     }
 
     /**
@@ -416,6 +505,36 @@ object RecordingFinisher {
     }
 
     /**
+     * Keeps the recording without making the caller wait for the disk.
+     *
+     * The screen that presses "Kaydet" closes in the same breath, and a write
+     * started from its coroutine scope would be cancelled the moment it did —
+     * losing the outing it was in the middle of saving. This runs on a scope
+     * that belongs to the save rather than to whoever asked for it.
+     *
+     * @param context Any context.
+     * @param name What to call it, or null for the default.
+     * @param sport What it should be recorded as.
+     * @param description The note to save with it.
+     * @param visibility Who may see it.
+     */
+    fun keepAsync(
+        context: Context,
+        name: String? = null,
+        sport: SportType? = null,
+        description: String = "",
+        visibility: Visibility = Visibility.DEFAULT,
+    ) {
+        // Armed here rather than inside the coroutine so the screen closing on
+        // the next line already knows a save is in flight.
+        _awaitingUpload.value = true
+        val applicationContext = context.applicationContext
+        scope.launch {
+            keep(applicationContext, name, sport, description, visibility)
+        }
+    }
+
+    /**
      * Names the activity the way it will read in the feed.
      *
      * @param context Any context, for the sport's label.
@@ -423,7 +542,7 @@ object RecordingFinisher {
      * @param startedAt Epoch millis the recording began.
      * @return The activity name.
      */
-    private fun activityName(context: Context, sport: SportType, startedAt: Long): String {
+    fun defaultName(context: Context, sport: SportType, startedAt: Long): String {
         val time = SimpleDateFormat("d MMMM HH:mm", Locale("tr")).format(Date(startedAt))
         return context.getString(R.string.activity_name, context.getString(sport.labelRes), time)
     }

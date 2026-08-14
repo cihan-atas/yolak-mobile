@@ -95,6 +95,26 @@ class YolakApi(private val config: ServerConfig) {
     }
 
     /**
+     * Says who may see an activity that has just been created.
+     *
+     * The only choice from the save sheet that cannot travel inside the file:
+     * the name, the sport and the description are all read out of the GPX, but
+     * visibility belongs to something that does not exist until the server has
+     * parsed it. So it is applied immediately afterwards, in a request whose
+     * failure costs a setting and never the outing itself.
+     *
+     * @param activityId The activity the server just created.
+     * @param visibility 0 public, 1 followers, 2 private.
+     * @return How the request went.
+     */
+    fun setActivityVisibility(activityId: Long, visibility: Int): ApiResult = send(
+        method = "PUT",
+        url = config.activityVisibilityUrl(activityId, visibility),
+        contentType = "application/json; charset=utf-8",
+        writeBody = { output -> output.write("{}".toByteArray(Charsets.UTF_8)) },
+    )
+
+    /**
      * Performs a POST and classifies the outcome.
      *
      * @param url Absolute URL.
@@ -106,11 +126,27 @@ class YolakApi(private val config: ServerConfig) {
         url: String,
         contentType: String,
         writeBody: (java.io.OutputStream) -> Unit,
+    ): ApiResult = send("POST", url, contentType, writeBody)
+
+    /**
+     * Performs a request with a body and classifies the outcome.
+     *
+     * @param method HTTP method.
+     * @param url Absolute URL.
+     * @param contentType Value for the Content-Type header.
+     * @param writeBody Writes the request body to the connection's stream.
+     * @return How the request went.
+     */
+    private fun send(
+        method: String,
+        url: String,
+        contentType: String,
+        writeBody: (java.io.OutputStream) -> Unit,
     ): ApiResult {
         var connection: HttpURLConnection? = null
         return try {
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
+                requestMethod = method
                 doOutput = true
                 connectTimeout = CONNECT_TIMEOUT_MS
                 readTimeout = READ_TIMEOUT_MS

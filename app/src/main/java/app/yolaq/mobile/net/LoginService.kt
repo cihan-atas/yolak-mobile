@@ -173,8 +173,16 @@ object LoginService {
         val payload = JSONObject()
             .put("name", KEY_NAME)
             // Upload is what the recorder exists for; reading routes is what
-            // lets it show the line the athlete asked to follow.
-            .put("scopes", org.json.JSONArray().put("activities:upload").put("routes:read"))
+            // lets it show the line the athlete asked to follow. Write is for
+            // the one thing a GPX cannot say — who may see the activity —
+            // applied right after the upload that created it.
+            .put(
+                "scopes",
+                org.json.JSONArray()
+                    .put("activities:upload")
+                    .put("activities:write")
+                    .put("routes:read"),
+            )
             .put("current_password", password)
             .toString()
 

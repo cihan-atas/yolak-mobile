@@ -84,4 +84,39 @@ class GpxWriterTest {
         assertTrue(gpx.contains("<time>2025-08-06T"))
         assertTrue(gpx.contains("Z</time>"))
     }
+
+    /**
+     * The note typed on the save sheet has to reach the server with the
+     * upload. It travels in the track's `desc`, which is what the importer
+     * reads into the activity's description — the alternative was a second
+     * request that could fail on its own and leave the athlete's words
+     * nowhere.
+     */
+    @Test
+    fun `carries the athlete's note as the track description`() {
+        val gpx = GpxWriter.write(track, SportType.RUNNING, "Koşu", "Rüzgâra karşı")
+
+        assertTrue(gpx.contains("<desc>Rüzgâra karşı</desc>"))
+        // Order matters to the schema: name, then desc, then type.
+        assertTrue(gpx.indexOf("<name>") < gpx.indexOf("<desc>"))
+        assertTrue(gpx.indexOf("<desc>") < gpx.indexOf("<type>"))
+        DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(gpx.byteInputStream())
+    }
+
+    /** An empty note is no note, not an empty element for the server to store. */
+    @Test
+    fun `writes no description when there is nothing to say`() {
+        val gpx = GpxWriter.write(track, SportType.RUNNING, "Koşu", "   ")
+
+        assertFalse(gpx.contains("<desc>"))
+    }
+
+    /** A note is free text, so it has to survive the athlete typing markup. */
+    @Test
+    fun `escapes the note`() {
+        val gpx = GpxWriter.write(track, SportType.RUNNING, "Koşu", "5 < 6 & bitti")
+
+        assertTrue(gpx.contains("<desc>5 &lt; 6 &amp; bitti</desc>"))
+        DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(gpx.byteInputStream())
+    }
 }

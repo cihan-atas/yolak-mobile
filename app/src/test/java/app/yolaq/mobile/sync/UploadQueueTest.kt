@@ -76,4 +76,41 @@ class UploadQueueTest {
     fun `an empty queue is not an error`() {
         assertTrue(queue().pending().isEmpty())
     }
+
+    /**
+     * Visibility is chosen before the upload and can only be applied after it,
+     * so it waits on disk beside the recording. In memory it would not survive
+     * the outing finished in a tunnel and uploaded the next morning by a
+     * process started from cold.
+     */
+    @Test
+    fun `keeps the chosen visibility beside the recording`() {
+        val queue = queue()
+        val file = queue.enqueue("<gpx/>", 1_000L, mapOf("visibility" to "2"))
+
+        assertEquals(mapOf("visibility" to "2"), queue.meta(file))
+        // The sidecar must never be mistaken for something to upload.
+        assertEquals(listOf(file.name), queue.pending().map { it.name })
+    }
+
+    /** Recordings saved without touching the control carry nothing. */
+    @Test
+    fun `has no metadata when none was chosen`() {
+        val queue = queue()
+        val file = queue.enqueue("<gpx/>", 1_000L)
+
+        assertTrue(queue.meta(file).isEmpty())
+    }
+
+    /** Nothing of a finished upload may be left behind, sidecar included. */
+    @Test
+    fun `an accepted recording takes its metadata with it`() {
+        val queue = queue()
+        val file = queue.enqueue("<gpx/>", 1_000L, mapOf("visibility" to "1"))
+
+        queue.complete(file)
+
+        assertTrue(queue.meta(file).isEmpty())
+        assertTrue(File(file.parentFile, "${file.name}.meta").exists().not())
+    }
 }
