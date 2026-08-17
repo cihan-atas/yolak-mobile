@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.ValueCallback
 import android.Manifest
@@ -147,6 +148,19 @@ fun WebScreen(
         // bootstrap, so planting it afterwards would be one reload too late.
         WebSession.install(context)
         WebView(context).apply {
+            // Explicit MATCH_PARENT, not the default. Compose hands a view
+            // without layout params WRAP_CONTENT ones, and a WebView measured
+            // that way reports a CSS viewport with no height: `vh` units and
+            // percentage heights resolve to zero while the view still paints
+            // full screen. Full-height sections then collapse with no error
+            // anywhere — the territory map came through as 1.4px of border
+            // beside a perfectly correct scoreboard, and the same cause once
+            // emptied every form dialog (see FormDialog's min-height guard).
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+
             @SuppressLint("SetJavaScriptEnabled")
             // The web app is a Vue SPA: without scripting there is no page at
             // all. It only ever loads our own server (see the client below).
