@@ -17,6 +17,10 @@
          posting it needs the user's consent. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- The off-route warning. A message on a screen that is in a pocket
+         warns nobody; a buzz is the only part of it that arrives. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 

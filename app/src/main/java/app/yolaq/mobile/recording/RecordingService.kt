@@ -25,6 +25,8 @@ import app.yolaq.mobile.MainActivity
 import app.yolaq.mobile.R
 import app.yolaq.mobile.live.LiveBroadcaster
 import app.yolaq.mobile.net.ServerSettings
+import app.yolaq.mobile.routes.FollowedRoute
+import app.yolaq.mobile.routes.OffRouteAlert
 import app.yolaq.mobile.sync.RecordingFinisher
 import app.yolaq.mobile.sync.Storage
 import app.yolaq.mobile.sync.TrackJournal
@@ -85,6 +87,14 @@ class RecordingService : Service() {
     private var awaitingDecision = false
 
     private val listener = LocationListener { location -> onFix(location) }
+
+    /**
+     * Tracks whether the athlete has strayed from the route they chose.
+     *
+     * Held by the service rather than the screen for the same reason the
+     * recording is: the screen is gone for most of an outing.
+     */
+    private val offRouteAlert = OffRouteAlert()
 
     /** Reads the accelerometer; see [MotionWindow] for why this exists. */
     private val motionWindow = MotionWindow()
@@ -264,6 +274,10 @@ class RecordingService : Service() {
         this.sport = sport
         journal.begin(sport)
         startBroadcasting()
+        // A new outing has not strayed from anything yet. Starting somewhere
+        // off the chosen route would otherwise inherit the last outing's
+        // "already warned" state and stay silent for the whole of this one.
+        offRouteAlert.reset()
         RecordingRepository.start()
         resumeLocationUpdates()
     }
@@ -541,11 +555,32 @@ class RecordingService : Service() {
             runCatching { journal.append(point) }
                 .onFailure { error -> Log.e(TAG, "Nokta diske yazılamadı", error) }
             broadcaster?.offer(point)
+            warnIfStrayed(point)
         }
         // While acquiring, a rejected fix still changes what the notification
         // should say — it carries the accuracy the user is waiting on.
         if (accepted || RecordingRepository.state.value.status == RecordingStatus.ACQUIRING) {
             updateNotification()
+        }
+    }
+
+    /**
+     * Buzzes the phone the moment the athlete leaves the route they chose.
+     *
+     * Only while actually recording: a fix that lands during acquisition, or
+     * after a pause, says nothing about a wrong turn.
+     *
+     * @param point The accepted fix.
+     */
+    private fun warnIfStrayed(point: TrackPoint) {
+        val route = FollowedRoute.selected.value?.points.orEmpty()
+        if (route.isEmpty() ||
+            RecordingRepository.state.value.status != RecordingStatus.RECORDING
+        ) {
+            return
+        }
+        if (offRouteAlert.update(route, point)) {
+            vibrateOffRoute(this)
         }
     }
 

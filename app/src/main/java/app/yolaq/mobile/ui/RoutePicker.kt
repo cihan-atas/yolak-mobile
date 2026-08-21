@@ -20,7 +20,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -51,13 +50,23 @@ fun RoutePicker(onDismiss: () -> Unit, onSelected: (FollowableRoute?) -> Unit) {
 
     var routes by remember { mutableStateOf<List<FollowableRoute>?>(null) }
     var busy by remember { mutableStateOf(false) }
+    /**
+     * Why the last attempt did not produce a route to follow.
+     *
+     * Held separately from the selection because "it failed" and "I chose to
+     * run without a route" are different answers that used to arrive as the
+     * same null — the dialog would close on a network hiccup and the recorder
+     * would follow nothing, with nothing on screen to say so.
+     */
+    var error by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         val config = ServerSettings.load(context)
-        routes = if (config == null) {
-            emptyList()
+        if (config == null) {
+            error = context.getString(R.string.route_pick_error)
+            routes = emptyList()
         } else {
-            withContext(Dispatchers.IO) { RoutesApi(config).list() }
+            routes = withContext(Dispatchers.IO) { RoutesApi(config).list() }
         }
     }
 
@@ -69,11 +78,25 @@ fun RoutePicker(onDismiss: () -> Unit, onSelected: (FollowableRoute?) -> Unit) {
                 busy || routes == null -> CircularProgressIndicator()
 
                 routes.orEmpty().isEmpty() -> Text(
-                    text = context.getString(R.string.route_pick_empty),
+                    text = error ?: context.getString(R.string.route_pick_empty),
                     style = MaterialTheme.typography.bodyMedium,
+                    color = if (error == null) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
                 )
 
                 else -> Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    error?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+
                     routes.orEmpty().forEach { route ->
                         Column(
                             modifier = Modifier
@@ -84,6 +107,7 @@ fun RoutePicker(onDismiss: () -> Unit, onSelected: (FollowableRoute?) -> Unit) {
                                     // route's geometry to fill a list would be
                                     // megabytes for one pick.
                                     busy = true
+                                    error = null
                                     scope.launch {
                                         val config = ServerSettings.load(context)
                                         val full = if (config == null) {
@@ -94,7 +118,17 @@ fun RoutePicker(onDismiss: () -> Unit, onSelected: (FollowableRoute?) -> Unit) {
                                             }
                                         }
                                         busy = false
-                                        onSelected(full)
+                                        // A failure keeps the dialog open and
+                                        // says so. Passing the null on would
+                                        // have been indistinguishable from the
+                                        // athlete tapping "record without a
+                                        // route", which is the one thing they
+                                        // did not just ask for.
+                                        if (full == null) {
+                                            error = context.getString(R.string.route_pick_error)
+                                        } else {
+                                            onSelected(full)
+                                        }
                                     }
                                 }
                                 .padding(vertical = 10.dp),
@@ -125,40 +159,4 @@ fun RoutePicker(onDismiss: () -> Unit, onSelected: (FollowableRoute?) -> Unit) {
             }
         },
     )
-}
-
-/**
- * The line under the numbers: which route is being followed, and whether the
- * athlete is still on it.
- *
- * @param routeName The chosen route, or null when free-running.
- * @param offRouteMeters How far off the line, or null when on it / not following.
- * @param modifier Layout modifier.
- */
-@Composable
-fun RouteStatus(routeName: String?, offRouteMeters: Double?, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    if (routeName == null) {
-        return
-    }
-
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = if (offRouteMeters == null) {
-                context.getString(R.string.route_following, routeName)
-            } else {
-                context.getString(R.string.route_off, offRouteMeters)
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (offRouteMeters == null) {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            } else {
-                MaterialTheme.colorScheme.error
-            },
-        )
-    }
 }

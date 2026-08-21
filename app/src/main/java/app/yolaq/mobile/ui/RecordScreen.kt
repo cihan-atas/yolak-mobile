@@ -224,12 +224,15 @@ fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
         )
     }
 
-    val offRoute = followed?.points?.takeIf { it.isNotEmpty() }?.let { line ->
-        state.points.lastOrNull()?.let { here ->
-            RouteGuidance.distanceFromRoute(line, here)
-                ?.takeIf { it > RouteGuidance.OFF_ROUTE_METERS }
-        }
+    // One scan answers both questions the route is followed for: how far off
+    // the line, and how much of it is left.
+    val progress = followed?.points?.takeIf { it.isNotEmpty() }?.let { line ->
+        state.points.lastOrNull()?.let { here -> RouteGuidance.progress(line, here) }
     }
+    // What to *show*. The buzz that goes with it is raised by the recording
+    // service instead: this screen has stopped composing by the time a phone
+    // is on an arm or in a pocket, which is when a warning has to arrive.
+    val offRoute = progress?.distanceFromRoute?.takeIf { it > RouteGuidance.OFF_ROUTE_METERS }
 
     Box(modifier = Modifier.fillMaxSize()) {
         RecorderLayout(
@@ -238,6 +241,7 @@ fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
             sport = sport,
             followed = followed,
             offRoute = offRoute,
+            remainingMeters = progress?.remainingMeters,
             review = review,
             saving = saving,
             showStats = showStats,
@@ -285,6 +289,7 @@ fun RecordScreen(onClose: () -> Unit, onNavigate: (String) -> Unit) {
                 state = state,
                 sport = sport,
                 routeName = followed?.name,
+                remainingMeters = progress?.remainingMeters,
                 onDismiss = { showStats = false },
                 controls = controls,
             )
@@ -327,6 +332,7 @@ private fun RecorderLayout(
     sport: SportType,
     followed: app.yolaq.mobile.routes.FollowableRoute?,
     offRoute: Double?,
+    remainingMeters: Double?,
     review: RecordingFinisher.Review?,
     saving: Boolean,
     showStats: Boolean,
@@ -385,6 +391,7 @@ private fun RecorderLayout(
                 hasPermission = hasPermission,
                 offRouteMeters = offRoute,
                 routeName = followed?.name,
+                remainingMeters = remainingMeters,
                 outcome = outcome,
                 onOpenLocationSettings = onOpenLocationSettings,
                 modifier = Modifier
@@ -588,6 +595,8 @@ private fun SportChooser(
  * @param hasPermission Whether the app may read location.
  * @param offRouteMeters How far off the followed route, when off it.
  * @param routeName The route being followed, if any.
+ * @param remainingMeters How much of that route is left, once there is a fix
+ *   to measure from.
  * @param outcome What became of the last finished recording, if anything.
  * @param onOpenLocationSettings Opens the system's location settings.
  * @param modifier Layout modifier.
@@ -599,6 +608,7 @@ private fun MapNotices(
     hasPermission: Boolean,
     offRouteMeters: Double?,
     routeName: String?,
+    remainingMeters: Double?,
     outcome: RecordingFinisher.Outcome?,
     onOpenLocationSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -679,8 +689,19 @@ private fun MapNotices(
                 error = true,
             )
 
+            // The steady state of following a route: which one, and how much
+            // of it is left. The distance is the half that changes, and the
+            // half somebody actually looks down for.
             routeName != null -> Notice(
-                text = context.getString(R.string.route_following, routeName),
+                text = if (remainingMeters != null) {
+                    context.getString(
+                        R.string.route_following_remaining,
+                        routeName,
+                        formatKilometres(remainingMeters, decimals = 2),
+                    )
+                } else {
+                    context.getString(R.string.route_following, routeName)
+                },
                 error = false,
             )
         }

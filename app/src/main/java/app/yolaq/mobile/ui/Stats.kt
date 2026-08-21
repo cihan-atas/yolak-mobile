@@ -170,6 +170,7 @@ fun StatsStrip(
  * @param state The recording in progress.
  * @param sport What is being recorded.
  * @param routeName The route being followed, if any.
+ * @param remainingMeters How much of that route is left, when it is known.
  * @param onDismiss Back to the map.
  * @param controls The record controls, drawn at the foot of the screen.
  */
@@ -178,6 +179,7 @@ fun StatsFullScreen(
     state: RecordingState,
     sport: SportType,
     routeName: String?,
+    remainingMeters: Double?,
     onDismiss: () -> Unit,
     controls: @Composable () -> Unit,
 ) {
@@ -226,7 +228,18 @@ fun StatsFullScreen(
         ) {
             SportMark(sport = sport, color = MaterialTheme.colorScheme.primary, size = 20.dp)
             Text(
-                text = routeName ?: context.getString(sport.labelRes),
+                // The big number below is distance *covered*; on a followed
+                // route the other half of the question is what is left, and
+                // this is the screen someone opened to read numbers.
+                text = when {
+                    routeName == null -> context.getString(sport.labelRes)
+                    remainingMeters == null -> routeName
+                    else -> context.getString(
+                        R.string.route_following_remaining,
+                        routeName,
+                        formatKilometres(remainingMeters, decimals = 2),
+                    )
+                },
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

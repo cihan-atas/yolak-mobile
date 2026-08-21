@@ -155,9 +155,11 @@
     <string name="route_pick_title">Takip edilecek rota</string>
     <string name="route_pick_empty">Henüz rota yok. Web arayüzünden çizebilirsin.</string>
     <string name="route_pick_none">Rotasız kaydet</string>
+    <string name="route_pick_error">Rota alınamadı. Bağlantını kontrol edip tekrar dene.</string>
     <string name="route_choose">Rota seç</string>
     <string name="route_change">Rotayı değiştir</string>
     <string name="route_following">%1$s takip ediliyor</string>
+    <string name="route_following_remaining">%1$s · %2$s km kaldı</string>
     <string name="route_off">Rotadan %1$.0f m uzaktasın</string>
 
     <!-- Kabuk -->
